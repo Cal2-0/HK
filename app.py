@@ -27,34 +27,7 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-# --- Schema Migration Helper ---
-def check_db_schema():
-    """Manually add columns if they don't exist (for existing DBs)"""
-    with app.app_context():
-        try:
-            # Check Item table columns
-            # This is a naive check for SQLite. For Prod, use Alembic.
-            inspector = db.inspect(db.engine)
-            columns = [c['name'] for c in inspector.get_columns('item')]
-            
-            if 'price' not in columns:
-                print("Migrating: Adding 'price' to Item")
-                db.session.execute(db.text("ALTER TABLE item ADD COLUMN price FLOAT DEFAULT 0.0"))
-                
-            if 'min_stock' not in columns:
-                print("Migrating: Adding 'min_stock' to Item")
-                db.session.execute(db.text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
-                
-            # Create AuditLog table if missing
-            if not inspector.has_table('audit_log'):
-                print("Migrating: Creating AuditLog table")
-                db.create_all() # This creates all missing tables, including AuditLog
-                
-            db.session.commit()
-        except Exception as e:
-            print(f"Schema Check Error: {e}")
 
-check_db_schema()
 
 # --- Models ---
 class User(UserMixin, db.Model):
@@ -195,6 +168,36 @@ class Transaction(db.Model):
     __table_args__ = (
         CheckConstraint('quantity > 0', name='check_quantity_positive'),
     )
+
+# --- Schema Migration Helper ---
+def check_db_schema():
+    """Manually add columns if they don't exist (for existing DBs)"""
+    with app.app_context():
+        try:
+            # Ensure all tables exist (User, Item, etc.)
+            db.create_all() 
+            
+            # Now check for specific column migrations (for existing DBs that miss these)
+            inspector = db.inspect(db.engine)
+            
+            # If item table was just created by create_all, it has the columns.
+            # But if it existed before without them, we add them.
+            if inspector.has_table('item'): # Should be true now
+                columns = [c['name'] for c in inspector.get_columns('item')]
+                
+                if 'price' not in columns:
+                    print("Migrating: Adding 'price' to Item")
+                    db.session.execute(db.text("ALTER TABLE item ADD COLUMN price FLOAT DEFAULT 0.0"))
+                    
+                if 'min_stock' not in columns:
+                    print("Migrating: Adding 'min_stock' to Item")
+                    db.session.execute(db.text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
+                
+            db.session.commit()
+        except Exception as e:
+            print(f"Schema Check Error: {e}")
+
+check_db_schema()
 
 # --- Helpers ---
 @login_manager.user_loader
