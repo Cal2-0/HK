@@ -1,0 +1,388 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-header">
+  <div>
+    <h2>Outgoing Stock</h2>
+    <p>Remove items from inventory</p>
+  </div>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+    <span>← Back to Dashboard</span>
+  </a>
+</div>
+
+<div class="workflow-container">
+
+  <!-- Batch Header -->
+  <div class="card" style="margin-bottom: 2rem; background: var(--bg-dark);">
+    <h3 style="margin-bottom: 1.5rem; color: var(--danger);">Batch Information</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
+      <div class="form-group">
+        <label for="doc_number">Doc # (HK Reference)</label>
+        <input type="text" id="doc_number" placeholder="Enter Reference #">
+      </div>
+      <div class="form-group">
+        <label for="batch_date">Date</label>
+        <input type="date" id="batch_date" value="{{ date.today().strftime('%Y-%m-%d') }}">
+      </div>
+      <div class="form-group">
+        <label for="batch_remarks">Remarks / Container #</label>
+        <input type="text" id="batch_remarks" placeholder="Optional details">
+      </div>
+    </div>
+  </div>
+
+  <!-- Input Section -->
+  <div class="input-row">
+    <div class="form-group" style="position: relative; grid-column: span 2;">
+      <label for="item_search">Item Details (Item Code / Name / Brand)</label>
+      <input type="text" id="item_search" placeholder="Scan or type item..." autocomplete="off">
+      <div id="item_results" class="autocomplete-results"></div>
+      <input type="hidden" id="selected_item_id">
+    </div>
+
+    <div class="form-group" style="position: relative;">
+      <label for="location_id">Location</label>
+      <input type="text" id="location_id" placeholder="Select Location" autocomplete="off">
+      <div id="location_results" class="autocomplete-results"></div>
+    </div>
+
+    <div class="form-group">
+      <label for="quantity">Qty</label>
+      <input type="number" id="quantity" placeholder="0" step="1" min="0">
+      <div id="stock_display" style="display: none; font-size: 0.75rem; margin-top: 0.25rem;">
+        Avail: <span id="max_qty" style="color: var(--success); font-weight: bold;">0</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="pallets">Plts</label>
+      <input type="number" id="pallets" placeholder="0" step="1" min="0">
+      <div id="pallets_display" style="display: none; font-size: 0.75rem; margin-top: 0.25rem;">
+        Est. Avail: <span id="max_plts" style="color: var(--success);">0</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>&nbsp;</label>
+      <button class="btn btn-primary" id="add_btn" onclick="addItem()"
+        style="width: 100%; background: var(--danger);">Remove Item</button>
+    </div>
+  </div>
+
+  <!-- Review Section -->
+  <div class="review-section">
+    <h3>Current Batch Items</h3>
+    <table class="review-table">
+      <thead>
+        <tr>
+          <th>Item Code</th>
+          <th>Item Name</th>
+          <th>Brand</th>
+          <th>Location</th>
+          <th>Qty</th>
+          <th>Plts</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="review_list">
+        <!-- JS will populate -->
+      </tbody>
+    </table>
+
+    <div class="total-bar">
+      <span>Total Lines: <span id="total_lines" style="color: var(--danger);">0</span></span>
+      <button class="btn btn-danger" onclick="finishBatch()" style="margin-left: 2rem;">
+        Confirm Outgoing
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- History Section -->
+<div class="card" style="margin-top: 3rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+    <h3>Recent Outgoing History</h3>
+    <div class="search-container" style="margin: 0; min-width: 250px;">
+      <input type="text" id="historySearch" placeholder="Filter history..." oninput="filterHistory()">
+    </div>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table id="historyTable">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Doc #</th>
+          <th>Item</th>
+          <th>Brand</th>
+          <th>Location</th>
+          <th>Qty</th>
+          <th>Plts</th>
+          <th>Worker</th>
+          <th>Remarks</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for trans in recent_history %}
+        <tr>
+          <td>{{ trans.date.strftime('%Y-%m-%d') if trans.date else trans.timestamp.strftime('%Y-%m-%d') }}</td>
+          <td>{{ trans.doc_number or '-' }}</td>
+          <td>
+            <div style="font-weight: 600;">{{ trans.item.name }}</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">{{ trans.item.sku }}</div>
+          </td>
+          <td>{{ trans.item.brand or '-' }}</td>
+          <td><span class="badge">{{ trans.location.name }}</span></td>
+          <td style="color: var(--danger); font-weight: 600;">-{{ trans.quantity }}</td>
+          <td>{{ trans.pallets or '-' }}</td>
+          <td>{{ trans.worker_name or (trans.user.username if trans.user else 'N/A') }}</td>
+          <td>{{ trans.remarks or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  let cart = [];
+  let selectedItem = null;
+
+  window.onload = () => document.getElementById('item_search').focus();
+
+  // Navigation Logic
+  // ... similar to incoming but with location fetching ...
+
+  document.getElementById('item_search').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (selectedItem) { document.getElementById('location_id').focus(); }
+      else {
+        const first = document.querySelector('#item_results .result-item');
+        if (first) first.click();
+      }
+    }
+  });
+
+  document.getElementById('location_id').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = document.querySelector('#location_results .result-item');
+      if (first && !document.getElementById('location_id').value) {
+        first.click();
+      }
+      document.getElementById('quantity').focus();
+    }
+  });
+
+  // Fetch locations on focus if item selected
+  document.getElementById('location_id').addEventListener('focus', () => {
+    if (selectedItem) fetchLocations(selectedItem.id);
+  });
+
+  // Regular enters
+  document.getElementById('quantity').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('pallets').focus(); }
+  });
+  document.getElementById('pallets').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addItem(); }
+  });
+
+
+  // Item Search
+  const searchInput = document.getElementById('item_search');
+  const resultsDiv = document.getElementById('item_results');
+  let debounceTimer;
+
+  searchInput.addEventListener('input', (e) => {
+    clearTimeout(debounceTimer);
+    const q = e.target.value;
+    selectedItem = null;
+    document.getElementById('location_id').value = '';
+    document.getElementById('stock_display').style.display = 'none';
+
+    if (q.length < 1) { resultsDiv.style.display = 'none'; return; }
+
+    debounceTimer = setTimeout(() => {
+      fetch(`/api/items/search?q=${q}`)
+        .then(res => res.json())
+        .then(data => {
+          resultsDiv.innerHTML = '';
+          if (data.results.length > 0) {
+            resultsDiv.style.display = 'block';
+            data.results.forEach((item, index) => {
+              const div = document.createElement('div');
+              div.className = 'result-item';
+              if (index === 0) div.classList.add('selected');
+              div.textContent = item.text;
+              div.onclick = () => selectItem(item);
+              resultsDiv.appendChild(div);
+            });
+          } else { resultsDiv.style.display = 'none'; }
+        });
+    }, 200);
+  });
+
+  function selectItem(item) {
+    selectedItem = item;
+    searchInput.value = item.text.split('(')[0].trim();
+    document.getElementById('selected_item_id').value = item.id;
+    resultsDiv.style.display = 'none';
+    fetchLocations(item.id);
+    document.getElementById('location_id').focus();
+  }
+
+  function fetchLocations(itemId) {
+    fetch(`/api/item/${itemId}/locations`)
+      .then(res => res.json())
+      .then(data => {
+        const locDiv = document.getElementById('location_results');
+        locDiv.innerHTML = '';
+        if (data.locations && data.locations.length > 0) {
+          locDiv.style.display = 'block';
+          data.locations.forEach(loc => {
+            const div = document.createElement('div');
+            div.className = 'result-item';
+            div.textContent = `${loc.name} (Qty: ${loc.quantity})`;
+            div.onclick = () => selectLocation(loc);
+            locDiv.appendChild(div);
+          });
+        } else { locDiv.style.display = 'none'; }
+      });
+  }
+
+  function selectLocation(loc) {
+    document.getElementById('location_id').value = loc.name;
+    document.getElementById('location_results').style.display = 'none';
+
+    const maxQtySpan = document.getElementById('max_qty');
+    maxQtySpan.textContent = loc.quantity;
+    document.getElementById('stock_display').style.display = 'block';
+
+    // Rough estimate logic from original
+    const estPallets = Math.ceil(loc.quantity / 60);
+    document.getElementById('max_plts').textContent = estPallets;
+    document.getElementById('pallets_display').style.display = 'block';
+
+    document.getElementById('quantity').focus();
+  }
+
+  function addItem() {
+    const locId = document.getElementById('location_id').value.trim();
+    const qty = parseInt(document.getElementById('quantity').value) || 0;
+    const pallets = parseInt(document.getElementById('pallets').value) || 0;
+    const maxQty = parseFloat(document.getElementById('max_qty').textContent) || 999999;
+
+    if (!selectedItem) { alert("Please select a valid item."); return; }
+    if (!locId) { alert("Please enter a location."); return; }
+    if (!qty || qty <= 0) { alert("Please enter a valid quantity."); return; }
+    if (qty > maxQty) { alert(`Quantity exceeds available stock (${maxQty}).`); return; }
+
+    const itemText = selectedItem.text;
+    const itemSku = itemText.match(/\((.*?)\)/)?.[1] || '';
+    const itemName = itemText.split('(')[0].trim();
+
+    cart.push({
+      item_id: selectedItem.id,
+      item_sku: itemSku,
+      item_name: itemName,
+      location_id: locId,
+      quantity: qty,
+      pallets: pallets
+    });
+
+    updateReviewList();
+
+    // Reset
+    selectedItem = null;
+    searchInput.value = '';
+    document.getElementById('selected_item_id').value = '';
+    document.getElementById('location_id').value = '';
+    document.getElementById('quantity').value = '';
+    document.getElementById('pallets').value = '';
+    document.getElementById('stock_display').style.display = 'none';
+    document.getElementById('pallets_display').style.display = 'none';
+    document.getElementById('item_search').focus();
+  }
+
+  function updateReviewList() {
+    const tbody = document.getElementById('review_list');
+    tbody.innerHTML = '';
+    document.getElementById('total_lines').textContent = cart.length;
+
+    cart.slice().reverse().forEach((item, index) => {
+      const realIndex = cart.length - 1 - index;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+            <td>${item.item_sku}</td>
+            <td>${item.item_name}</td>
+            <td>-</td>
+            <td>${item.location_id}</td>
+            <td>${item.quantity}</td>
+            <td>${item.pallets || 0}</td>
+            <td><button class="btn btn-sm btn-danger" onclick="removeFromCart(${realIndex})">Remove</button></td>
+        `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function removeFromCart(index) {
+    cart.splice(index, 1);
+    updateReviewList();
+  }
+
+  function finishBatch() {
+    if (cart.length === 0) { alert("Batch is empty."); return; }
+
+    const docNumber = document.getElementById('doc_number').value.trim();
+    const batchDate = document.getElementById('batch_date').value;
+    const batchRemarks = document.getElementById('batch_remarks').value.trim();
+
+    if (!confirm(`Confirm removing ${cart.length} items?`)) return;
+
+    const batchData = {
+      doc_number: docNumber || null,
+      date: batchDate || null,
+      remarks: batchRemarks || null,
+      container_number: batchRemarks || null,
+      items: cart
+    };
+
+    fetch('/outgoing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(batchData)
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          alert(data.message);
+          window.location.href = '/dashboard';
+        } else {
+          alert('Error: ' + data.message);
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        alert('Error submitting stock');
+      });
+  }
+
+  function filterHistory() {
+    const input = document.getElementById('historySearch');
+    const filter = input.value.toLowerCase();
+    const table = document.getElementById('historyTable');
+    const tr = table.getElementsByTagName('tr');
+
+    for (let i = 1; i < tr.length; i++) {
+      const row = tr[i];
+      if (row.textContent.toLowerCase().includes(filter)) {
+        row.style.display = "";
+      } else {
+        row.style.display = "none";
+      }
+    }
+  }
+</script>
+{% endblock %}

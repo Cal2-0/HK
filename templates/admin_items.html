@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-header" style="margin-bottom: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <h2>Manage Items</h2>
+      <p>Add, edit, or remove inventory items</p>
+    </div>
+    <div style="display: flex; gap: 1rem;">
+      <form action="{{ url_for('admin_items') }}" method="POST" enctype="multipart/form-data" style="display:inline;">
+        <input type="file" name="file" onchange="this.form.submit()" style="display:none;" id="importFile"
+          accept=".xlsx, .xls">
+        <button type="button" class="btn btn-secondary" onclick="document.getElementById('importFile').click()">Import
+          items.xlsx</button>
+      </form>
+      <button class="btn btn-primary" onclick="openModal('addModal')">Add New Item</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div style="margin-bottom: 1.5rem; display: flex; justify-content: flex-end;">
+    <form action="{{ url_for('admin_items') }}" method="GET"
+      style="display: flex; gap: 1rem; width: 100%; max-width: 400px;">
+      <input type="text" name="q" placeholder="Search items..." value="{{ q }}" class="form-control" style="flex:1;">
+      <button type="submit" class="btn btn-secondary">Search</button>
+    </form>
+  </div>
+
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Item Code</th>
+          <th>Name</th>
+          <th>Brand</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items.items %}
+        <tr>
+          <td>{{ item.sku }}</td>
+          <td>{{ item.name }}</td>
+          <td>{{ item.brand }}</td>
+          <td>
+            <button class="btn btn-sm btn-secondary"
+              onclick='openEditModal({{ item.to_dict() | tojson }})'>Edit</button>
+            <form action="{{ url_for('admin_items') }}" method="POST" style="display:inline;"
+              onsubmit="return confirm('Are you sure?');">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="item_id" value="{{ item.id }}">
+              <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  <div style="margin-top: 1rem;">
+    {% if items.has_prev %}
+    <a href="{{ url_for('admin_items', page=items.prev_num) }}" class="btn btn-sm btn-secondary">Previous</a>
+    {% endif %}
+    {% if items.has_next %}
+    <a href="{{ url_for('admin_items', page=items.next_num) }}" class="btn btn-sm btn-secondary">Next</a>
+    {% endif %}
+  </div>
+</div>
+</div>
+
+</div>
+
+<!-- Add Modal -->
+<div id="addModal" class="modal">
+  <!-- Content -->
+  <div class="modal-content">
+    <span class="close" onclick="closeModal('addModal')">&times;</span>
+    <h2>Add New Item</h2>
+    <form action="{{ url_for('admin_items') }}" method="POST">
+      <input type="hidden" name="action" value="add">
+      <div class="form-group">
+        <label>Item Code (SKU)</label>
+        <input type="text" name="sku" required>
+      </div>
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" name="name" required>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <input type="text" name="description">
+      </div>
+      <div class="form-group">
+        <label>Brand</label>
+        <input type="text" name="brand">
+      </div>
+      <div class="form-group">
+        <label>Packing</label>
+        <input type="text" name="packing">
+      </div>
+      <div class="form-group">
+        <label>Weight / Quantity</label>
+        <input type="number" step="0.01" name="weight">
+      </div>
+      <div class="form-group">
+        <label>UOM</label>
+        <input type="text" name="uom">
+      </div>
+      <button type="submit" class="btn btn-primary">Add Item</button>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="modal">
+  <div class="modal-content">
+    <span class="close" onclick="closeModal('editModal')">&times;</span>
+    <h2>Edit Item</h2>
+    <form action="{{ url_for('admin_items') }}" method="POST">
+      <input type="hidden" name="action" value="edit">
+      <input type="hidden" name="item_id" id="edit_item_id">
+      <div class="form-group">
+        <label>Item Code (SKU)</label>
+        <input type="text" name="sku" id="edit_sku" required>
+      </div>
+      <div class="form-group">
+        <label>Name</label>
+        <input type="text" name="name" id="edit_name" required>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <input type="text" name="description" id="edit_description">
+      </div>
+      <div class="form-group">
+        <label>Brand</label>
+        <input type="text" name="brand" id="edit_brand">
+      </div>
+      <div class="form-group">
+        <label>Packing</label>
+        <input type="text" name="packing" id="edit_packing">
+      </div>
+      <div class="form-group">
+        <label>Weight / Quantity</label>
+        <input type="number" step="0.01" name="weight" id="edit_weight">
+      </div>
+      <div class="form-group">
+        <label>UOM</label>
+        <input type="text" name="uom" id="edit_uom">
+      </div>
+      <button type="submit" class="btn btn-primary">Update Item</button>
+    </form>
+  </div>
+</div>
+
+<script>
+  function openModal(id) {
+    document.getElementById(id).style.display = "block";
+  }
+
+  function closeModal(id) {
+    document.getElementById(id).style.display = "none";
+  }
+
+  function openEditModal(item) {
+    document.getElementById('edit_item_id').value = item.id;
+    document.getElementById('edit_sku').value = item.sku;
+    document.getElementById('edit_name').value = item.name;
+    document.getElementById('edit_description').value = item.description || '';
+    document.getElementById('edit_brand').value = item.brand || '';
+    document.getElementById('edit_packing').value = item.packing || '';
+    document.getElementById('edit_weight').value = item.weight || '';
+    document.getElementById('edit_uom').value = item.uom || '';
+    openModal('editModal');
+  }
+
+  window.onclick = function (event) {
+    if (event.target.classList.contains('modal')) {
+      event.target.style.display = "none";
+    }
+  }
+</script>
+{% endblock %}

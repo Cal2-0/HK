@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-header">
+  <div>
+    <h2>Incoming Stock</h2>
+    <p>Add new items to inventory</p>
+  </div>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+    <span>← Back to Dashboard</span>
+  </a>
+</div>
+
+<div class="workflow-container">
+
+  <!-- Batch Header -->
+  <div class="card" style="margin-bottom: 2rem; background: var(--bg-dark);">
+    <h3 style="margin-bottom: 1.5rem; color: var(--primary);">Batch Information</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
+      <div class="form-group">
+        <label for="doc_number">Doc # (HK Reference)</label>
+        <input type="text" id="doc_number" placeholder="Enter Reference #">
+      </div>
+      <div class="form-group">
+        <label for="batch_date">Date</label>
+        <input type="date" id="batch_date" value="{{ date.today().strftime('%Y-%m-%d') }}">
+      </div>
+      <div class="form-group">
+        <label for="batch_remarks">Remarks / Container #</label>
+        <input type="text" id="batch_remarks" placeholder="Optional details">
+      </div>
+    </div>
+  </div>
+
+  <!-- Input Section -->
+  <div class="input-row">
+    <div class="form-group" style="position: relative;">
+      <label for="item_search">Item Details</label>
+      <input type="text" id="item_search" placeholder="Scan or type item..." autocomplete="off">
+      <div id="item_results" class="autocomplete-results"></div>
+      <input type="hidden" id="selected_item_id">
+    </div>
+
+    <div class="form-group" style="position: relative;">
+      <label for="location_id">Location</label>
+      <input type="text" id="location_id" placeholder="Ex: A101" autocomplete="off">
+    </div>
+
+    <div class="form-group">
+      <label for="quantity">Qty</label>
+      <input type="number" id="quantity" placeholder="0" step="1" min="0">
+    </div>
+
+    <div class="form-group">
+      <label for="pallets">Plts</label>
+      <input type="number" id="pallets" placeholder="0" step="1" min="0">
+    </div>
+
+    <div class="form-group">
+      <label for="expiry">Expiry (MM/YY)</label>
+      <input type="text" id="expiry" placeholder="MM/YY">
+    </div>
+
+    <div class="form-group">
+      <label>&nbsp;</label>
+      <button class="btn btn-primary" id="add_btn" onclick="addItem()" style="width: 100%;">Add Item</button>
+    </div>
+  </div>
+
+  <!-- Review Section -->
+  <div class="review-section">
+    <h3>Current Batch Items</h3>
+    <table class="review-table">
+      <thead>
+        <tr>
+          <th>Item Code</th>
+          <th>Item Name</th>
+          <th>Brand</th>
+          <th>Location</th>
+          <th>Qty</th>
+          <th>Plts</th>
+          <th>Expiry</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody id="review_list">
+        <!-- JS will populate -->
+      </tbody>
+    </table>
+
+    <div class="total-bar">
+      <span>Total Lines: <span id="total_lines" style="color: var(--primary);">0</span></span>
+      <button class="btn btn-success" onclick="finishBatch()"
+        style="margin-left: 2rem; background: var(--success); color: white;">
+        Confirm Incoming
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- History Section -->
+<div class="card" style="margin-top: 3rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+    <h3>Recent Incoming History</h3>
+    <div class="search-container" style="margin: 0; min-width: 250px;">
+      <input type="text" id="historySearch" placeholder="Filter history..." oninput="filterHistory()">
+    </div>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table id="historyTable">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Doc #</th>
+          <th>Item</th>
+          <th>Brand</th>
+          <th>Location</th>
+          <th>Qty</th>
+          <th>Plts</th>
+          <th>Expiry</th>
+          <th>Worker</th>
+          <th>Remarks</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for trans in recent_history %}
+        <tr>
+          <td>
+            <div>{{ (trans.date or trans.timestamp).strftime('%Y-%m-%d') }}</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">
+              {{ (trans.timestamp + timedelta(hours=4)).strftime('%H:%M') }}
+            </div>
+          </td>
+          <td>{{ trans.doc_number or '-' }}</td>
+          <td>
+            <div style="font-weight: 600;">{{ trans.item.name }}</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted);">{{ trans.item.sku }}</div>
+          </td>
+          <td>{{ trans.item.brand or '-' }}</td>
+          <td><span class="badge">{{ trans.location.name }}</span></td>
+          <td style="color: var(--success); font-weight: 600;">+{{ trans.quantity }}</td>
+          <td>{{ trans.pallets or '-' }}</td>
+          <td class="expiry-{{ check_expiry(trans.expiry) }}">{{ trans.expiry or '-' }}</td>
+          <td>{{ trans.worker_name or (trans.user.username if trans.user else 'N/A') }}</td>
+          <td>{{ trans.remarks or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  // ... (Keep existing JS logic, just ensuring IDs match) ...
+  let cart = [];
+  let selectedItem = null;
+
+  window.onload = () => document.getElementById('item_search').focus();
+
+  // Navigation Logic
+  const inputs = ['item_search', 'location_id', 'quantity', 'pallets', 'expiry', 'add_btn'];
+  inputs.forEach((id, index) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (id === 'add_btn' || id === 'expiry') {
+            // On last field or button, add the item
+            addItem();
+          } else if (id === 'item_search') {
+            // Special handling for search selection handled elsewhere or fallthrough
+            const next = document.getElementById(inputs[index + 1]);
+            if (next) next.focus();
+          } else {
+            const next = document.getElementById(inputs[index + 1]);
+            if (next) next.focus();
+          }
+        }
+      });
+    }
+  });
+
+  // Search Logic
+  const searchInput = document.getElementById('item_search');
+  const resultsDiv = document.getElementById('item_results');
+  let debounceTimer;
+
+  searchInput.addEventListener('input', (e) => {
+    clearTimeout(debounceTimer);
+    const q = e.target.value;
+    selectedItem = null;
+
+    if (q.length < 1) {
+      resultsDiv.style.display = 'none';
+      return;
+    }
+
+    debounceTimer = setTimeout(() => {
+      fetch(`/api/items/search?q=${q}`)
+        .then(res => res.json())
+        .then(data => {
+          resultsDiv.innerHTML = '';
+          if (data.results.length > 0) {
+            resultsDiv.style.display = 'block';
+            data.results.forEach((item, index) => {
+              const div = document.createElement('div');
+              div.className = 'result-item';
+              if (index === 0) div.classList.add('selected');
+              div.textContent = item.text;
+              div.onclick = () => selectItem(item);
+              resultsDiv.appendChild(div);
+            });
+          } else {
+            resultsDiv.style.display = 'none';
+          }
+        });
+    }, 200);
+  });
+
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      // If results visible, pick first
+      if (resultsDiv.style.display === 'block') {
+        const first = resultsDiv.querySelector('.result-item');
+        if (first) first.click();
+      }
+    }
+  });
+
+  function selectItem(item) {
+    selectedItem = item;
+    searchInput.value = item.text.split('(')[0].trim();
+    document.getElementById('selected_item_id').value = item.id;
+    // Store brand for later use
+    selectedItem.brand = item.brand;
+    resultsDiv.style.display = 'none';
+    document.getElementById('location_id').focus();
+  }
+
+  function addItem() {
+    const locInput = document.getElementById('location_id');
+    const loc = locInput.value.trim();
+    const qty = parseInt(document.getElementById('quantity').value) || 0;
+    const pallets = parseInt(document.getElementById('pallets').value) || 0;
+    const expiry = document.getElementById('expiry').value.trim();
+
+    if (!selectedItem) { showToast("Please select a valid item.", 'error'); return; }
+    if (!loc) { showToast("Please enter a location.", 'error'); return; }
+    if (!qty || qty <= 0) { showToast("Invalid quantity.", 'error'); return; }
+
+    const itemText = selectedItem.text;
+    const itemSku = itemText.match(/\((.*?)\)/)?.[1] || '';
+    const itemName = itemText.split('(')[0].trim();
+    const itemBrand = selectedItem.brand || '-';
+
+    cart.push({
+      item_id: selectedItem.id,
+      item_sku: itemSku,
+      item_name: itemName,
+      item_brand: itemBrand,
+      location_id: loc,
+      quantity: qty,
+      pallets: pallets,
+      expiry: expiry
+    });
+
+    updateReviewList();
+
+    // Smart Reset: Keep Batch Info, clear others
+    selectedItem = null;
+    searchInput.value = '';
+    document.getElementById('selected_item_id').value = '';
+    document.getElementById('location_id').value = '';
+    document.getElementById('quantity').value = '';
+    document.getElementById('pallets').value = '';
+    document.getElementById('expiry').value = '';
+
+    // Show feedback
+    if (typeof showToast === 'function') {
+      showToast(`Added ${itemName} to batch!`);
+    }
+
+    // Re-focus search for next item
+    setTimeout(() => document.getElementById('item_search').focus(), 50);
+  }
+
+  function updateReviewList() {
+    const tbody = document.getElementById('review_list');
+    tbody.innerHTML = '';
+    document.getElementById('total_lines').textContent = cart.length;
+
+    cart.slice().reverse().forEach((item, index) => {
+      const realIndex = cart.length - 1 - index;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+            <td>${item.item_sku}</td>
+            <td>${item.item_name}</td>
+            <td>${item.item_brand}</td>
+            <td>${item.location_id}</td>
+            <td>${item.quantity}</td>
+            <td>${item.pallets || 0}</td>
+            <td>${item.expiry || '-'}</td>
+            <td><button class="btn btn-sm btn-danger" onclick="removeFromCart(${realIndex})">Remove</button></td>
+        `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function removeFromCart(index) {
+    cart.splice(index, 1);
+    updateReviewList();
+  }
+
+  function finishBatch() {
+    if (cart.length === 0) { alert("Batch is empty."); return; }
+
+    const docNumber = document.getElementById('doc_number').value.trim();
+    const batchDate = document.getElementById('batch_date').value;
+    const batchRemarks = document.getElementById('batch_remarks').value.trim();
+
+    if (!confirm(`Confirm adding ${cart.length} items?`)) return;
+
+    const batchData = {
+      doc_number: docNumber || null,
+      date: batchDate || null,
+      remarks: batchRemarks || null,
+      container_number: batchRemarks || null,
+      items: cart
+    };
+
+    fetch('/incoming', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(batchData)
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          alert(data.message);
+          window.location.href = '/dashboard';
+        } else {
+          alert('Error: ' + data.message);
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        alert('Error submitting stock');
+      });
+  }
+
+  function filterHistory() {
+    const input = document.getElementById('historySearch');
+    const filter = input.value.toLowerCase();
+    const table = document.getElementById('historyTable');
+    const tr = table.getElementsByTagName('tr');
+
+    for (let i = 1; i < tr.length; i++) {
+      const row = tr[i];
+      if (row.textContent.toLowerCase().includes(filter)) {
+        row.style.display = "";
+      } else {
+        row.style.display = "none";
+      }
+    }
+  }
+</script>
+{% endblock %}

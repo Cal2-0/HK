@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-header">
+  <div>
+    <h2>Warehouse Deep Dive</h2>
+    <p>Complete inventory breakdown by location</p>
+  </div>
+  <div class="search-container">
+    <input type="text" id="warehouseSearch" placeholder="Search locations, items, SKU..." oninput="filterWarehouse()">
+  </div>
+</div>
+
+<div class="card" style="padding: 0; overflow: hidden;">
+  <div class="table-responsive" style="max-height: 80vh; overflow-y: auto;">
+    <table class="table table-hover" id="warehouseTable">
+      <thead style="position: sticky; top: 0; background: var(--bg-card); z-index: 10;">
+        <tr>
+          <th style="width: 150px;">Location</th>
+          <th style="width: 120px;">Pallets</th>
+          <th>Utilization</th>
+          <th style="width: 100px; text-align: right;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if location_data %}
+        {% for loc_info in location_data %}
+        {% set loc = loc_info.location %}
+        {% set status_color = 'var(--success)' %}
+        {% if loc_info.usage_percent >= 100 %}
+        {% set status_color = 'var(--danger)' %}
+        {% elif loc_info.usage_percent >= 80 %}
+        {% set status_color = 'var(--warning)' %}
+        {% endif %}
+
+        <tr class="warehouse-row"
+          data-search="{{ loc.name|lower }} {% if loc_info.inventory_items %}{% for inv in loc_info.inventory_items %}{{ inv.item.sku|lower }} {{ inv.item.name|lower }} {{ inv.item.brand|lower if inv.item.brand else '' }} {% endfor %}{% endif %}">
+          <td style="font-weight: 600; font-size: 1.1rem;">
+            {{ loc.name }}
+          </td>
+          <td>
+            <span style="font-weight: bold; color: {{ status_color }};">{{ loc_info.used_pallets }}</span>
+            <span style="color: var(--text-muted); font-size: 0.8em;">/ {{ loc_info.max_pallets }}</span>
+          </td>
+          <td style="vertical-align: middle;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div style="flex-grow: 1; background: var(--bg-dark); height: 8px; border-radius: 4px; overflow: hidden;">
+                <div style="background: {{ status_color }}; width: {{ loc_info.usage_percent }}%; height: 100%;"></div>
+              </div>
+              <span style="font-size: 0.85rem; width: 40px; text-align: right; color: {{ status_color }};">{{
+                loc_info.usage_percent|round|int }}%</span>
+            </div>
+          </td>
+          <td style="text-align: right;">
+            <button class="btn btn-sm btn-secondary" onclick="showLocationDetails('{{ loc.id }}', '{{ loc.name }}')">
+              View
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Re-use the Global Modal -->
+<div id="locationModal" class="modal">
+  <div class="modal-content">
+    <div
+      style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem;">
+      <h2 id="modalLocationName" style="margin: 0; font-size: 1.8rem;">Location Details</h2>
+      <span class="close">&times;</span>
+    </div>
+    <div id="modalContent">
+      <div style="text-align: center; padding: 2rem; color: var(--text-muted);">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function filterWarehouse() {
+    const input = document.getElementById('warehouseSearch');
+    const filter = input.value.toLowerCase();
+    const rows = document.getElementsByClassName('warehouse-row');
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const searchData = row.getAttribute('data-search') || "";
+
+      if (searchData.includes(filter)) {
+        row.style.display = "";
+      } else {
+        row.style.display = "none";
+      }
+    }
+  }
+</script>
+<style>
+  .table-hover tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.03);
+  }
+
+  /* Sticky header refinement */
+  .table thead th {
+    box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.4);
+  }
+</style>
+{% endblock %}

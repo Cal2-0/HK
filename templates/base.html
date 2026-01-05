@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Inventory Management{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ range(1, 100000) | random }}">
+  <script src="{{ url_for('static', filename='script.js') }}?v={{ range(1, 100000) | random }}" defer></script>
+</head>
+
+<body>
+  <nav>
+    <div class="logo">IMS</div>
+    {% if current_user.is_authenticated %}
+    <div class="nav-links">
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('warehouse') }}">Warehouse</a>
+      <a href="{{ url_for('incoming') }}">Incoming</a>
+      <a href="{{ url_for('outgoing') }}">Outgoing</a>
+      <a href="{{ url_for('logs') }}">Logs</a>
+      {% if current_user.is_admin() %}
+      <a href="{{ url_for('admin_items') }}">Manage Items</a>
+      <a href="{{ url_for('admin_locations') }}">Manage Locations</a>
+      <a href="{{ url_for('admin_users') }}">Manage Users</a>
+      <a href="{{ url_for('admin_db') }}">Raw DB</a>
+      {% endif %}
+      <a href="{{ url_for('logout') }}">Logout</a>
+    </div>
+    {% endif %}
+  </nav>
+
+  <main class="container">
+    {% with messages = get_flashed_messages() %}
+    {% if messages %}
+    <div class="flashes">
+      {% for message in messages %}
+      <div class="flash">{{ message }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+
+</html>

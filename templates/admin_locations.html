@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+  <div class="dashboard-header" style="display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <h2>Manage Locations</h2>
+    </div>
+    <div style="display: flex; gap: 1rem;">
+      <form action="{{ url_for('admin_locations') }}" method="POST" enctype="multipart/form-data"
+        style="display:inline;">
+        <input type="file" name="file" onchange="this.form.submit()" style="display:none;" id="importLocFile"
+          accept=".xlsx, .xls">
+        <button type="button" class="btn btn-secondary"
+          onclick="document.getElementById('importLocFile').click()">Import locs.xlsx</button>
+      </form>
+      <button class="btn btn-primary" onclick="openModal('addModal')">Add New Location</button>
+    </div>
+  </div>
+
+  <div style="margin-bottom: 2rem;">
+    <form action="{{ url_for('admin_locations') }}" method="GET" style="display: flex; gap: 1rem; max-width: 400px;">
+      <input type="text" name="q" placeholder="Search locations..." value="{{ q }}" class="form-control"
+        style="flex:1;">
+      <button type="submit" class="btn btn-secondary">Search</button>
+    </form>
+  </div>
+
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Location Name</th>
+          <th>Map X</th>
+          <th>Map Y</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for loc in locations.items %}
+        <tr>
+          <td>{{ loc.name }}</td>
+          <td>{{ loc.x }}</td>
+          <td>{{ loc.y }}</td>
+          <td>
+            <button class="btn btn-sm btn-secondary"
+              onclick='openEditModal({{ loc.id }}, "{{ loc.name }}", {{ loc.x }}, {{ loc.y }})'>Edit</button>
+            <form action="{{ url_for('admin_locations') }}" method="POST" style="display:inline;"
+              onsubmit="return confirm('Are you sure?');">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="loc_id" value="{{ loc.id }}">
+              <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  <div style="margin-top: 1rem;">
+    {% if locations.has_prev %}
+    <a href="{{ url_for('admin_locations', page=locations.prev_num) }}" class="btn btn-sm btn-secondary">Previous</a>
+    {% endif %}
+    {% if locations.has_next %}
+    <a href="{{ url_for('admin_locations', page=locations.next_num) }}" class="btn btn-sm btn-secondary">Next</a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Add Modal -->
+<div id="addModal" class="modal">
+  <div class="modal-content">
+    <span class="close" onclick="closeModal('addModal')">&times;</span>
+    <h2>Add New Location</h2>
+    <form action="{{ url_for('admin_locations') }}" method="POST">
+      <input type="hidden" name="action" value="add">
+      <div class="form-group">
+        <label>Location Name</label>
+        <input type="text" name="name" required>
+      </div>
+      <div class="form-group">
+        <label>Map X Coordinate</label>
+        <input type="number" name="x" value="0">
+      </div>
+      <div class="form-group">
+        <label>Map Y Coordinate</label>
+        <input type="number" name="y" value="0">
+      </div>
+      <button type="submit" class="btn btn-primary">Add Location</button>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="modal">
+  <div class="modal-content">
+    <span class="close" onclick="closeModal('editModal')">&times;</span>
+    <h2>Edit Location</h2>
+    <form action="{{ url_for('admin_locations') }}" method="POST">
+      <input type="hidden" name="action" value="edit">
+      <input type="hidden" name="loc_id" id="edit_loc_id">
+      <div class="form-group">
+        <label>Location Name</label>
+        <input type="text" name="name" id="edit_name" required>
+      </div>
+      <div class="form-group">
+        <label>Map X Coordinate</label>
+        <input type="number" name="x" id="edit_x">
+      </div>
+      <div class="form-group">
+        <label>Map Y Coordinate</label>
+        <input type="number" name="y" id="edit_y">
+      </div>
+      <button type="submit" class="btn btn-primary">Update Location</button>
+    </form>
+  </div>
+</div>
+
+<script>
+  function openModal(id) {
+    document.getElementById(id).style.display = "block";
+  }
+
+  function closeModal(id) {
+    document.getElementById(id).style.display = "none";
+  }
+
+  function openEditModal(id, name, x, y) {
+    document.getElementById('edit_loc_id').value = id;
+    document.getElementById('edit_name').value = name;
+    document.getElementById('edit_x').value = x;
+    document.getElementById('edit_y').value = y;
+    openModal('editModal');
+  }
+
+  window.onclick = function (event) {
+    if (event.target.classList.contains('modal')) {
+      event.target.style.display = "none";
+    }
+  }
+</script>
+{% endblock %}

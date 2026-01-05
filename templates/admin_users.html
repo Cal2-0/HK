@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-header" style="margin-bottom: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <h2>Manage Users</h2>
+      <p>Control user access and roles</p>
+    </div>
+    <button class="btn btn-primary" onclick="openModal('addModal')">Add New User</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td>{{ user.username }}</td>
+          <td>
+            <span
+              class="badge {% if user.role == 'admin' %}badge-danger{% elif user.role == 'manager' %}badge-warning{% else %}badge-info{% endif %}">
+              {{ user.role|title }}
+            </span>
+          </td>
+          <td>
+            <span class="badge {% if user.active %}badge-success{% else %}badge-secondary{% endif %}">
+              {% if user.active %}Active{% else %}Inactive{% endif %}
+            </span>
+          </td>
+          <td>
+            <button class="btn btn-sm btn-secondary"
+              onclick='openEditModal({{ {"id": user.id, "username": user.username, "role": user.role} | tojson }})'>Edit</button>
+            {% if user.id != current_user.id %}
+            <form action="{{ url_for('admin_users') }}" method="POST" style="display:inline;"
+              onsubmit="return confirm('Are you sure you want to deactivate this user?');">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="user_id" value="{{ user.id }}">
+              <button type="submit" class="btn btn-sm btn-danger">Deactivate</button>
+            </form>
+            {% else %}
+            <span class="text-muted" style="font-size: 0.9rem;">(Current user)</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+
+<!-- Add Modal -->
+<div id="addModal" class="modal">
+  <div class="modal-content">
+    <span class="close" onclick="closeModal('addModal')">&times;</span>
+    <h2>Add New User</h2>
+    <form action="{{ url_for('admin_users') }}" method="POST">
+      <input type="hidden" name="action" value="add">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" name="username" required>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" name="password" required minlength="6">
+      </div>
+      <div class="form-group">
+        <label>Role</label>
+        <select name="role" required>
+          <option value="worker">Worker</option>
+          <option value="manager">Manager</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">Add User</button>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="modal">
+  <div class="modal-content">
+    <span class="close" onclick="closeModal('editModal')">&times;</span>
+    <h2>Edit User</h2>
+    <form action="{{ url_for('admin_users') }}" method="POST">
+      <input type="hidden" name="action" value="edit">
+      <input type="hidden" name="user_id" id="edit_user_id">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="edit_username" readonly style="background-color: #f0f0f0;">
+      </div>
+      <div class="form-group">
+        <label>New Password (leave blank to keep current)</label>
+        <input type="password" name="password" minlength="6">
+      </div>
+      <div class="form-group">
+        <label>Role</label>
+        <select name="role" id="edit_role" required>
+          <option value="worker">Worker</option>
+          <option value="manager">Manager</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary">Update User</button>
+    </form>
+  </div>
+</div>
+
+<script>
+  function openModal(id) {
+    document.getElementById(id).style.display = "block";
+  }
+
+  function closeModal(id) {
+    document.getElementById(id).style.display = "none";
+  }
+
+  function openEditModal(user) {
+    document.getElementById('edit_user_id').value = user.id;
+    document.getElementById('edit_username').value = user.username;
+    document.getElementById('edit_role').value = user.role;
+    openModal('editModal');
+  }
+
+  window.onclick = function (event) {
+    if (event.target.classList.contains('modal')) {
+      event.target.style.display = "none";
+    }
+  }
+</script>
+
+<style>
+  .badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: 500;
+  }
+
+  .badge-success {
+    background: rgba(34, 197, 94, 0.2);
+    color: #22c55e;
+  }
+
+  .badge-danger {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+  }
+
+  .badge-warning {
+    background: rgba(251, 191, 36, 0.2);
+    color: #fbbf24;
+  }
+
+  .badge-info {
+    background: rgba(59, 130, 246, 0.2);
+    color: #3b82f6;
+  }
+
+  .badge-secondary {
+    background: rgba(100, 116, 139, 0.2);
+    color: #64748b;
+  }
+</style>
+{% endblock %}

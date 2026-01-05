@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-header" style="flex-direction: column; align-items: stretch; gap: 1rem; padding: 1.5rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+    <div>
+      <h2 style="font-size: 1.75rem; margin-bottom: 0.25rem;">Command Center</h2>
+      <p style="margin: 0; font-size: 0.9rem;">Overview • {{ total_items }} Batches • {{ total_locations }} Locations
+      </p>
+    </div>
+
+    <div class="actions" style="display: flex; gap: 1rem; flex-wrap: wrap;">
+      <a href="{{ url_for('incoming') }}" class="btn btn-primary btn-sm"><span>+ Incoming</span></a>
+      <a href="{{ url_for('outgoing') }}" class="btn btn-secondary btn-sm"><span>- Outgoing</span></a>
+      <a href="{{ url_for('reports') }}" class="btn btn-secondary btn-sm"
+        style="background: var(--bg-input); color: var(--text-main); border-color: var(--border-color);"><span>📊
+          Reports</span></a>
+    </div>
+  </div>
+</div>
+
+<div class="dashboard-grid" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;">
+
+  <!-- Top Row: KPI Tiles -->
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem;">
+    <!-- Value Tile -->
+    <div class="card" style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between;">
+      <div>
+        <p
+          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
+          Tot. Value</p>
+        <h3 style="margin: 0.25rem 0 0; font-size: 1.5rem; color: var(--success);">AED {{ "{:,.0f}".format(total_value)
+          }}</h3>
+      </div>
+      <div style="font-size: 2rem; opacity: 0.2;">💰</div>
+    </div>
+
+    <!-- Items Tile -->
+    <div class="card" style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between;">
+      <div>
+        <p
+          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
+          Batches</p>
+        <h3 style="margin: 0.25rem 0 0; font-size: 1.5rem; color: var(--text-main);">{{ total_items }}</h3>
+      </div>
+      <div style="font-size: 2rem; opacity: 0.2;">📦</div>
+    </div>
+
+    <!-- Low Stock Tile (Red if > 0) -->
+    <div class="card"
+      style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; border-left: 4px solid {{ 'var(--danger)' if low_stock_items else 'var(--success)' }};">
+      <div>
+        <p
+          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
+          Low Stock</p>
+        <h3
+          style="margin: 0.25rem 0 0; font-size: 1.5rem; color: {{ 'var(--danger)' if low_stock_items else 'var(--text-main)' }};">
+          {{ low_stock_items|length }}</h3>
+      </div>
+      <div style="font-size: 2rem; opacity: 0.2;">⚠️</div>
+    </div>
+
+    <!-- Expiring Tile (Orange if > 0) -->
+    <div class="card"
+      style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; border-left: 4px solid {{ 'var(--warning)' if expiring_items else 'var(--success)' }};">
+      <div>
+        <p
+          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
+          Expiring (30d)</p>
+        <h3
+          style="margin: 0.25rem 0 0; font-size: 1.5rem; color: {{ 'var(--warning)' if expiring_items else 'var(--text-main)' }};">
+          {{ expiring_items|length }}</h3>
+      </div>
+      <div style="font-size: 2rem; opacity: 0.2;">⏰</div>
+    </div>
+  </div>
+
+  <!-- Middle Row: Split View -->
+  <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; align-items: start; min-height: 400px;">
+
+    <!-- Left: Main Chart -->
+    <div class="card" style="padding: 1.5rem; height: 100%; min-height: 400px; display: flex; flex-direction: column;">
+      <h3
+        style="margin-top: 0; margin-bottom: 1rem; font-size: 1.1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+        Stock Movement (30 Days)</h3>
+      <div style="flex-grow: 1; position: relative;">
+        <canvas id="stockChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Right: Feeds (Stacked) -->
+    <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+
+      <!-- Low Stock Feed -->
+      <div class="card" style="padding: 1rem; max-height: 300px; display: flex; flex-direction: column;">
+        <h4 style="margin: 0 0 0.5rem; color: var(--danger); display: flex; align-items: center; gap: 0.5rem;">
+          ⚠️ Low Stock Alerts <span style="font-size: 0.8em; color: var(--text-muted); font-weight: normal;">({{
+            low_stock_items|length }})</span>
+        </h4>
+        <div style="overflow-y: auto; padding-right: 0.5rem; flex-grow: 1;">
+          {% if low_stock_items %}
+          {% for item in low_stock_items %}
+          <div style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); font-size: 0.9rem;">
+            <div style="font-weight: bold; margin-bottom: 0.2rem;">{{ item.name }}</div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted);">
+              <span>Current: <b style="color: var(--danger);">{{ item.qty }}</b></span>
+              <span>Min: {{ item.min }}</span>
+            </div>
+          </div>
+          {% endfor %}
+          {% else %}
+          <div style="text-align: center; color: var(--text-muted); padding: 1rem;">All Good!</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Expiry Feed -->
+      <div class="card" style="padding: 1rem; max-height: 300px; display: flex; flex-direction: column;">
+        <h4 style="margin: 0 0 0.5rem; color: var(--warning); display: flex; align-items: center; gap: 0.5rem;">
+          ⏰ Expiring Soon <span style="font-size: 0.8em; color: var(--text-muted); font-weight: normal;">({{
+            expiring_items|length }})</span>
+        </h4>
+        <div style="overflow-y: auto; padding-right: 0.5rem; flex-grow: 1;">
+          {% if expiring_items %}
+          {% for inv in expiring_items %}
+          <div style="padding: 0.5rem; border-bottom: 1px solid var(--border-color); font-size: 0.9rem;">
+            <div style="font-weight: bold; margin-bottom: 0.2rem;">{{ inv.item.name }}</div>
+            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted);">
+              <span>Exp: <b style="color: var(--warning);">{{ inv.expiry }}</b></span>
+              <span>Loc: {{ inv.location.name }}</span>
+            </div>
+          </div>
+          {% endfor %}
+          {% else %}
+          <div style="text-align: center; color: var(--text-muted); padding: 1rem;">No risks found.</div>
+          {% endif %}
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- Media Query for Mobile Stack -->
+<style>
+  @media (max-width: 900px) {
+    .dashboard-grid>div:nth-child(2) {
+      grid-template-columns: 1fr !important;
+      /* Stack chart and lists on mobile */
+    }
+  }
+</style>
+
+<!-- Global Modal -->
+<div id="locationModal" class="modal">
+  <div class="modal-content">
+    <div
+      style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem;">
+      <h2 id="modalLocationName" style="margin: 0; font-size: 2rem;">Details</h2>
+      <span class="close">&times;</span>
+    </div>
+    <div id="modalContent">
+      <div style="text-align: center; padding: 2rem; color: var(--text-muted);">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const ctx = document.getElementById('stockChart').getContext('2d');
+
+    // Data from Backend
+    const labels = {{ chart_dates| tojson
+  }};
+  const dataIn = {{ chart_in| tojson }};
+  const dataOut = {{ chart_out| tojson }};
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'Incoming',
+          data: dataIn,
+          borderColor: '#10b981', // var(--success)
+          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+          tension: 0.4,
+          fill: true
+        },
+        {
+          label: 'Outgoing',
+          data: dataOut,
+          borderColor: '#ef4444', // var(--danger)
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          tension: 0.4,
+          fill: true
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'top' }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(255, 255, 255, 0.1)' },
+          ticks: { color: '#888' }
+        },
+        x: {
+          grid: { display: false },
+          ticks: { color: '#888' }
+        }
+      }
+    }
+  });
+
+  // Dark mode text color fix for Chart.js
+  Chart.defaults.color = '#888';
+  Chart.defaults.borderColor = 'rgba(255, 255, 255, 0.1)';
+  });
+</script>
+{% endblock %}
