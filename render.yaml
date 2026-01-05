@@ -2,11 +2,11 @@ services:
   - type: web
     name: supply-chain-app
     env: python
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "gunicorn app:app"
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.0
+        value: 3.11
       - key: SECRET_KEY
         generateValue: true
       - key: FLASK_DEBUG
