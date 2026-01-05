@@ -192,7 +192,18 @@ def check_db_schema():
                 if 'min_stock' not in columns:
                     print("Migrating: Adding 'min_stock' to Item")
                     db.session.execute(db.text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
-                
+            
+            # Create default admin user if no users exist
+            if 'user' in inspector.get_table_names() or inspector.has_table('user'):
+                try:
+                    if User.query.count() == 0:
+                        print("Migrating: Creating default admin user")
+                        admin = User(username='admin', role='admin', active=True)
+                        admin.set_password('admin')
+                        db.session.add(admin)
+                except Exception as e:
+                    print(f"Error creating default admin: {e}")
+
             db.session.commit()
         except Exception as e:
             print(f"Schema Check Error: {e}")
