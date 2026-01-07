@@ -16,7 +16,7 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-key-simple-v2-CHANGE-IN-PRODUCTION')
 # Support PostgreSQL via environment variable, fallback to SQLite for development
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///inventory_v2_expiry.db')
-if database_url.startswith('postgresql://'):
+if database_url and database_url.startswith('postgres://'):
     # Convert postgres:// to postgresql:// for SQLAlchemy
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
