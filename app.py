@@ -448,7 +448,7 @@ def reports():
     min_qty = request.args.get('min_qty', '')
     max_qty = request.args.get('max_qty', '')
 
-    query = query.join(Item) # Join for filtering
+    query = query.outerjoin(Item) # Outer join to include orphans
 
     if filter_type == 'in': query = query.filter(Transaction.type == 'IN')
     elif filter_type == 'out': query = query.filter(Transaction.type == 'OUT')
@@ -478,8 +478,8 @@ def reports():
 
     if search_term:
         term = f"%{search_term}%"
-        # Avoid duplicate join if location needed
-        query = query.join(Location, Transaction.location_id == Location.id)\
+        # Avoid duplicate join if location needed, use outerjoin
+        query = query.outerjoin(Location, Transaction.location_id == Location.id)\
                      .filter(
                          db.or_(
                              Item.name.ilike(term),
