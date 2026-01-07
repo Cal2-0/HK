@@ -510,10 +510,10 @@ def reports():
                 'Time': t.timestamp.strftime('%H:%M'),
                 'Type': t.type,
                 'Doc Number': t.doc_number,
-                'SKU': t.item.sku,
-                'Item Name': t.item.name,
-                'Brand': t.item.brand,
-                'Location': t.location.name,
+                'SKU': t.item.sku if t.item else '<Deleted>',
+                'Item Name': t.item.name if t.item else '<Deleted>',
+                'Brand': t.item.brand if t.item else '',
+                'Location': t.location.name if t.location else '<Deleted>',
                 'Quantity': t.quantity,
                 'Pallets': t.pallets,
                 'Expiry': t.expiry,
@@ -816,15 +816,22 @@ def admin_users():
 def dashboard():
     total_items = Inventory.query.filter(Inventory.quantity > 0).count()
     total_locations = Location.query.count()
-    inventory = Inventory.query.filter(Inventory.quantity > 0).all()
-    total_value = sum((inv.quantity * (inv.item.price or 0)) for inv in inventory)
     
+    # OPTIMIZED: Calculate total value in DB to handle nulls and avoid N+1
     from sqlalchemy import func
+    total_value_qry = db.session.query(func.sum(Inventory.quantity * Item.price)).join(Item).filter(Inventory.quantity > 0).scalar()
+    total_value = total_value_qry or 0
+    
+    # 4. Low Stock Items
     stock_levels = db.session.query(Item.id, Item.name, Item.min_stock, func.sum(Inventory.quantity)).outerjoin(Inventory).group_by(Item.id).all()
     low_stock_items = [{'name': s[1], 'qty': s[3] or 0, 'min': s[2]} for s in stock_levels if (s[3] or 0) < (s[2] or 0)]
     
+    # 5. Expiry Check - Needs Inventory Iteration but eager load Item is not needed, just expiry string
+    # Eager load item just in case we display name
+    inventory = Inventory.query.options(joinedload(Inventory.item)).filter(Inventory.quantity > 0).all()
     expiring_items = [i for i in inventory if check_expiry(i.expiry) in ['expired', 'expiring']]
     
+    # 6. Chart Data
     last_30 = datetime.now() - timedelta(days=30)
     txs = Transaction.query.filter(Transaction.timestamp >= last_30).all()
     chart_data = { (datetime.now()-timedelta(days=i)).strftime('%Y-%m-%d'): {'in':0,'out':0} for i in range(31) }
@@ -839,6 +846,7 @@ def dashboard():
         items=inventory, locations=[], chart_dates=dates,
         chart_in=[chart_data[d]['in'] for d in dates], chart_out=[chart_data[d]['out'] for d in dates]
     )
+
 
 @app.route('/warehouse')
 @login_required

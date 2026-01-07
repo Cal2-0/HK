@@ -162,14 +162,14 @@
             {% endif %}
           </td>
           <td>{{ trans.doc_number or '-' }}</td>
-          <td>{{ trans.item.sku }}</td>
-          <td>{{ trans.item.name }}</td>
-          <td>{{ trans.location.name }}</td>
+          <td>{{ trans.item.sku if trans.item else '<Deleted>' }}</td>
+          <td>{{ trans.item.name if trans.item else '<Deleted>' }}</td>
+          <td>{{ trans.location.name if trans.location else '<Deleted>' }}</td>
           <td data-val="{{ trans.quantity }}"
             style="font-weight: bold; {% if trans.quantity > 0 %}color: var(--success);{% else %}color: var(--danger);{% endif %}">
             {{ trans.quantity }}
           </td>
-          <td>{{ trans.item.brand or '-' }}</td>
+          <td>{{ trans.item.brand if trans.item else '-' }}</td>
           <td>{{ trans.pallets or '-' }}</td>
           <td class="expiry-{{ check_expiry(trans.expiry) }}">{{ trans.expiry or '-' }}</td>
           <td>{{ trans.worker_name or (trans.user.username if trans.user else 'System') }}</td>
