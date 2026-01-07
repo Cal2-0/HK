@@ -38,6 +38,13 @@ if database_url:
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Optimization for Remote DB (Supabase/Render)
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,  # Verify connection before usage (fixes stale connections)
+    'pool_recycle': 300,    # Recycle connections every 5 minutes
+    'pool_timeout': 30,     # Wait up to 30s for a connection
+}
+
 db = SQLAlchemy(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -215,47 +222,22 @@ def init_db():
 # CRITICAL FIX: Do NOT run this globally on Render/Gunicorn as it causes boot timeouts if DB is slow!
 # init_db()
 
-# --- Emergency No-Login Mode ---
-class MockUser(UserMixin):
-    id = 1
-    username = 'admin'
-    role = 'admin'
-    active = True
-    
-    def is_admin(self): return True
-    def is_manager(self): return True
-    def get_id(self): return "1"
-
-# Override user_loader to ALWAYS return MockUser
+# --- Helpers ---
 @login_manager.user_loader
 def load_user(user_id):
-    return MockUser()
+    try:
+        # Robust loader: If DB is down, return None to force logout instead of 500 Error
+        return User.query.get(int(user_id))
+    except Exception as e:
+        print(f"⚠️ User Loader Error: {e}")
+        return None
 
-# Lazy Intialization Pattern
-with app.app_context():
-    app.config['DB_INITIALIZED'] = False
 
-@app.before_request
-def initialize_database_on_first_request():
-    # 1. Lazy DB Init
-    if not app.config.get('DB_INITIALIZED'):
-        app.config['DB_INITIALIZED'] = True
-        init_db()
-        
-    # 2. Force Login (Emergency Mode)
-    if not current_user.is_authenticated:
-        try:
-            from flask_login import login_user
-            u = MockUser()
-            login_user(u, force=True)
-        except: pass
 
-@app.template_filter('add_hours')
-def add_hours_filter(dt, hours):
-    if not dt: return dt
-    return dt + timedelta(hours=int(hours))
-
-# --- Routes ---
+# --- Helpers ---
+def resolve_location(loc_input):
+    if not loc_input: return None
+    # Try exact match first
     loc = Location.query.filter(Location.name.ilike(loc_input)).first()
     if loc: return loc.id
     
@@ -315,15 +297,30 @@ def health_check():
 
 @app.route('/')
 def index():
-    return redirect(url_for('dashboard'))
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    return redirect(url_for('dashboard'))
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        try:
+            user = User.query.filter_by(username=username).first()
+            if user and user.check_password(password):
+                login_user(user)
+                return redirect(url_for('dashboard'))
+            flash('Invalid username or password')
+        except Exception as e:
+            flash(f'Database Connection Error: {e}')
+    return render_template('login.html')
 
 @app.route('/logout')
+@login_required
 def logout():
-    return redirect(url_for('dashboard'))
+    logout_user()
+    return redirect(url_for('login'))
 
 @app.route('/incoming', methods=['GET', 'POST'])
 @login_required
