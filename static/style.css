@@ -424,10 +424,18 @@ tr:hover td {
     background-color: var(--bg-card);
     border: 1px solid var(--border-color);
     box-shadow: var(--shadow-lg);
+    position: absolute;
+    width: 100%;
+    max-height: 200px;
+    overflow-y: auto;
+    z-index: 1000;
+    top: 100%;
+    /* Below input */
+    left: 0;
 }
 
 .result-item {
-    padding: 1rem;
+    padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--border-color);
     color: var(--text-main);
 }
@@ -473,5 +481,3 @@ tr:hover td {
 #locationModal .modal-table tr {
     line-height: 1.2;
 }
-
-```

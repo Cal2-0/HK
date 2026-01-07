@@ -165,35 +165,43 @@ class Transaction(db.Model):
     )
 
 # --- Schema Migration Helper ---
-def check_db_schema():
+def init_db():
     with app.app_context():
         try:
+            print("🔄 Initializing Database...")
             db.create_all() 
-            inspector = db.inspect(db.engine)
             
+            # Check for migrations/schema updates
+            inspector = db.inspect(db.engine)
             if inspector.has_table('item'): 
                 columns = [c['name'] for c in inspector.get_columns('item')]
                 if 'price' not in columns:
+                    print("🛠️ Migrating: Adding price column to Item")
                     db.session.execute(text("ALTER TABLE item ADD COLUMN price FLOAT DEFAULT 0.0"))
                 if 'min_stock' not in columns:
+                    print("🛠️ Migrating: Adding min_stock column to Item")
                     db.session.execute(text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
             
+            # Ensure Admin Exists
             if 'user' in inspector.get_table_names() or inspector.has_table('user'):
                 if User.query.count() == 0:
                     try:
+                        print("👤 Creating default admin user...")
                         admin = User(username='admin', role='admin', active=True)
-                        admin.set_password('admin')
+                        admin.set_password('admin123')
                         db.session.add(admin)
-                    except: pass
+                        db.session.commit()
+                    except Exception as e:
+                        print(f"⚠️ Error creating default admin: {e}")
 
             db.session.commit()
+            print("✅ Database Initialized Successfully")
         except Exception as e:
-            print(f"Schema Check Error: {e}")
+            print(f"❌ Database Initialization Failed: {e}")
+            # Don't exit, let app try to run so /health can report error
 
-try:
-    check_db_schema()
-except Exception as e:
-    print(f"⚠️ Schema Check Skipped (DB Error): {e}")
+# Run init immediately to fail fast in logs or prepare for requests
+init_db()
 
 # --- Helpers ---
 @login_manager.user_loader
@@ -238,6 +246,25 @@ def add_hours_filter(dt, hours):
     return dt + timedelta(hours=int(hours))
 
 # --- Routes ---
+
+@app.route('/health')
+def health_check():
+    try:
+        # Simple DB Check
+        user_count = User.query.count()
+        return jsonify({
+            'status': 'ok', 
+            'database': 'connected', 
+            'users': user_count,
+            'db_url': app.config['SQLALCHEMY_DATABASE_URI'].split('://')[0] # Only show protocol for security
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'status': 'error', 
+            'error': str(e), 
+            'traceback': traceback.format_exc()
+        }), 500
 
 @app.route('/')
 def index():
@@ -291,7 +318,11 @@ def incoming():
                 
                 if qty <= 0: return jsonify({'success': False, 'message': 'Quantity must be greater than 0'}), 400
                 
+                print(f"DEBUG: Processing item {item_id} at {loc_txt}, expiry={expiry}")
+                
                 loc_id = resolve_location(loc_txt)
+                print(f"DEBUG: Resolved location '{loc_txt}' to ID {loc_id}")
+                
                 if not loc_id: return jsonify({'success': False, 'message': f'Location "{loc_txt}" not found'}), 400
                 
                 location = Location.query.get(loc_id)
@@ -301,6 +332,7 @@ def incoming():
                 if not existing_inv:
                     used_pallets = location.get_used_pallets()
                     if used_pallets >= location.max_pallets:
+                        print(f"DEBUG: Location full. Used: {used_pallets}, Max: {location.max_pallets}")
                         return jsonify({'success': False, 'message': f'Location "{loc_txt}" is full'}), 400
                 
                 if existing_inv:
@@ -897,24 +929,7 @@ def get_location_inventory(location_id):
         return jsonify({'inventory': results, 'location': {'name': location.name, 'used': location.get_used_pallets(), 'free': location.get_free_pallets()}})
     except: return jsonify({'error': 'Error'}), 500
 
-# Ensure tables exist (Fix for Render/Gunicorn)
-# Wrapped in try-except to prevent deployment crash if DB is unreachable
-try:
-    with app.app_context():
-        db.create_all()
-        # Create default admin if not exists
-        if not User.query.filter_by(username='admin').first():
-            try:
-                admin = User(username='admin', role='admin')
-                admin.set_password('admin123')
-                db.session.add(admin)
-                db.session.commit()
-                print("👤 Created default admin user: admin / admin123")
-            except Exception as e:
-                print(f"Error creating admin: {e}")
-except Exception as e:
-    print(f"⚠️ Startup Error (Database): {e}")
-    print("   Check your DATABASE_URL setting on Render!")
+
 
 if __name__ == '__main__':
     app.config['TEMPLATES_AUTO_RELOAD'] = True
