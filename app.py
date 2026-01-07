@@ -317,6 +317,15 @@ def health_check():
             'traceback': traceback.format_exc()
         }), 500
 
+            'error': str(e), 
+            'traceback': traceback.format_exc()
+        }), 500
+
+@app.errorhandler(500)
+def internal_error(error):
+    import traceback
+    return f"<h1>500 Internal Server Error</h1><p>{error}</p><pre>{traceback.format_exc()}</pre>", 500
+
 @app.route('/')
 def index():
     if current_user.is_authenticated:
