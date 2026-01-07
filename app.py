@@ -19,10 +19,21 @@ database_url = os.environ.get('DATABASE_URL', 'sqlite:///inventory_v2_expiry.db'
 if database_url and database_url.startswith('postgres://'):
     # Convert postgres:// to postgresql:// for SQLAlchemy
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
-    print("✅ Using PostgreSQL Database")
+    
+if database_url and 'postgresql' in database_url:
+    # Supabase/Render PostgreSQL requires SSL
+    if 'sslmode' not in database_url:
+        joiner = '&' if '?' in database_url else '?'
+        database_url = f"{database_url}{joiner}sslmode=require"
+    print("✅ Using PostgreSQL Database (SSL Enforced)")
 else:
     print("⚠️  WARNING: Using SQLite Database. Data WILL BE LOST on restart!")
     print("   To fix: Deploy using the 'Blueprints' tab on Render or set DATABASE_URL.")
+
+# Log masked URL for debugging
+if database_url:
+    masked = re.sub(r':([^@]+)@', ':****@', database_url)
+    print(f"🔌 Connection String: {masked}")
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
