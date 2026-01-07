@@ -831,13 +831,32 @@ def dashboard():
     inventory = Inventory.query.options(joinedload(Inventory.item)).filter(Inventory.quantity > 0).all()
     expiring_items = [i for i in inventory if check_expiry(i.expiry) in ['expired', 'expiring']]
     
-    # 6. Chart Data
+    # 6. Chart Data (Optimized: SQL Group By)
     last_30 = datetime.now() - timedelta(days=30)
-    txs = Transaction.query.filter(Transaction.timestamp >= last_30).all()
+    
+    # Query: Date, Type, Count
+    # PostgreSQL/SQLite compatible date extraction is tricky. 
+    # For MVP and robust DB support, distinct queries for IN and OUT might be cleaner or just one group by.
+    # We will use python for grouping to ensure DB compatibility (sqlite vs postgres dates), 
+    # BUT we will only fetch the minimal columns (date, type) instead of full objects.
+    # Actually, fetching 10k tuples is way cheaper than 10k Objects.
+    
+    # Even better: 
+    # Postgres: func.date(Transaction.timestamp)
+    # SQLite: func.date(Transaction.timestamp) (works if string)
+    # Let's try simple column fetch first to save memory.
+    
+    raw_data = db.session.query(Transaction.timestamp, Transaction.type).filter(Transaction.timestamp >= last_30).all()
+    
     chart_data = { (datetime.now()-timedelta(days=i)).strftime('%Y-%m-%d'): {'in':0,'out':0} for i in range(31) }
-    for t in txs:
-        d = t.timestamp.strftime('%Y-%m-%d')
-        if d in chart_data: chart_data[d][t.type.lower()] += 1
+    
+    for dt, t_type in raw_data:
+        d_str = dt.strftime('%Y-%m-%d')
+        if d_str in chart_data:
+             t_type_key = t_type.lower() if t_type else 'in'
+             if t_type_key in chart_data[d_str]:
+                chart_data[d_str][t_type_key] += 1
+                
     dates = sorted(chart_data.keys())
     
     return render_template('dashboard.html', 
