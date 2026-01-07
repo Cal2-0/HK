@@ -236,6 +236,23 @@ def init_db():
                     print("🛠️ Migrating: Adding min_stock column to Item")
                     db.session.execute(text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
 
+            if inspector.has_table('location'):
+                columns = [c['name'] for c in inspector.get_columns('location')]
+                print(f"📊 Current Location Columns: {columns}")
+                
+                if 'x' not in columns:
+                     print("🛠️ Migrating: Adding x column to Location")
+                     db.session.execute(text("ALTER TABLE location ADD COLUMN x INTEGER DEFAULT 0"))
+                
+                if 'y' not in columns:
+                     print("🛠️ Migrating: Adding y column to Location")
+                     db.session.execute(text("ALTER TABLE location ADD COLUMN y INTEGER DEFAULT 0"))
+
+                if 'max_pallets' not in columns:
+                     print("🛠️ Migrating: Adding max_pallets column to Location")
+                     db.session.execute(text("ALTER TABLE location ADD COLUMN max_pallets INTEGER DEFAULT 28"))
+
+
             
             # Ensure Admin Exists
             if 'user' in inspector.get_table_names() or inspector.has_table('user'):
