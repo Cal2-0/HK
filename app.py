@@ -317,9 +317,7 @@ def health_check():
             'traceback': traceback.format_exc()
         }), 500
 
-            'error': str(e), 
-            'traceback': traceback.format_exc()
-        }), 500
+
 
 @app.errorhandler(500)
 def internal_error(error):
