@@ -744,29 +744,48 @@ def admin_items():
             file = request.files['file']
             if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
                 try:
-                    df = pd.read_excel(file)
+                    print(f"📂 Processing Import: {file.filename}")
+                    # Force openpyxl and handle errors gracefully
+                    df = pd.read_excel(file, engine='openpyxl')
+                    
                     def clean(x): return str(x).strip() if pd.notna(x) else ''
                     count = 0
+                    new_items = []
+                    
                     for _, row in df.iterrows():
                         sku = clean(row.get('Item Code', '') or row.get('SKU', ''))
                         if not sku or sku == 'nan': continue
+                        
                         name = clean(row.get('Description', '') or row.get('Name', 'Unknown'))
                         item = Item.query.filter_by(sku=sku).first()
+                        
                         if not item:
+                            # Create new
                             item = Item(sku=sku, name=name, description=name, brand=clean(row.get('Brand', '')),
                                 packing=clean(row.get('Packing', '')), weight=row.get('Weight', 0.0) if pd.notna(row.get('Weight')) else 0.0,
                                 uom=clean(row.get('UOM', '')))
                             db.session.add(item)
                             count += 1
                         else:
-                            item.name = name; item.description = name; item.brand = clean(row.get('Brand', ''))
-                            item.packing = clean(row.get('Packing', '')); item.weight = row.get('Weight', 0.0) if pd.notna(row.get('Weight')) else 0.0
+                            # Update existing
+                            item.name = name
+                            item.description = name
+                            item.brand = clean(row.get('Brand', ''))
+                            item.packing = clean(row.get('Packing', ''))
+                            item.weight = row.get('Weight', 0.0) if pd.notna(row.get('Weight')) else 0.0
                             item.uom = clean(row.get('UOM', ''))
+                            
                     db.session.commit()
+                    print(f"✅ Imported {count} items successfully")
                     flash(f'Imported/Updated {count} items.')
                     log_audit('IMPORT_ITEMS', f'Imported {count} items')
+                    
                 except Exception as e:
-                    db.session.rollback(); flash(f'Error: {str(e)}')
+                    db.session.rollback()
+                    import traceback
+                    print(f"❌ Import Error: {e}")
+                    print(traceback.format_exc())
+                    flash(f'Import Error: {str(e)}')
             return redirect(url_for('admin_items'))
 
         if action == 'add':
