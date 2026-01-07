@@ -137,6 +137,7 @@ class Item(db.Model):
             'uom': self.uom
         }
 
+
 class Inventory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     item_id = db.Column(db.Integer, db.ForeignKey('item.id'), nullable=False)
@@ -751,41 +752,127 @@ def admin_items():
             file = request.files['file']
             if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
                 try:
-                    print(f"📂 Processing Import: {file.filename}")
-                    # Force openpyxl and handle errors gracefully
-                    df = pd.read_excel(file, engine='openpyxl')
+                    print(f"📂 Processing Items Import: {file.filename}")
                     
-                    def clean(x): return str(x).strip() if pd.notna(x) else ''
-                    count = 0
-                    new_items = []
+                    # Read Excel with proper engine
+                    try:
+                        df = pd.read_excel(file, engine='openpyxl')
+                    except:
+                        df = pd.read_excel(file, engine='xlrd')
                     
-                    for _, row in df.iterrows():
-                        sku = clean(row.get('Item Code', '') or row.get('SKU', ''))
-                        if not sku or sku == 'nan': continue
-                        
-                        name = clean(row.get('Description', '') or row.get('Name', 'Unknown'))
-                        item = Item.query.filter_by(sku=sku).first()
-                        
-                        if not item:
-                            # Create new
-                            item = Item(sku=sku, name=name, description=name, brand=clean(row.get('Brand', '')),
-                                packing=clean(row.get('Packing', '')), weight=row.get('Weight', 0.0) if pd.notna(row.get('Weight')) else 0.0,
-                                uom=clean(row.get('UOM', '')))
-                            db.session.add(item)
-                            count += 1
-                        else:
-                            # Update existing
-                            item.name = name
-                            item.description = name
-                            item.brand = clean(row.get('Brand', ''))
-                            item.packing = clean(row.get('Packing', ''))
-                            item.weight = row.get('Weight', 0.0) if pd.notna(row.get('Weight')) else 0.0
-                            item.uom = clean(row.get('UOM', ''))
+                    print(f"📊 Columns: {df.columns.tolist()}")
+                    
+                    def clean(x):
+                        return str(x).strip() if pd.notna(x) else ''
+                    
+                    count_new = 0
+                    count_updated = 0
+                    
+                    for idx, row in df.iterrows():
+                        try:
+                            # Flexible SKU column reading
+                            sku = None
+                            for col in ['Item Code', 'SKU', 'Code', 'sku', 'item_code']:
+                                if col in df.columns:
+                                    sku = clean(row[col])
+                                    break
+                            if not sku and len(row) > 0:
+                                sku = clean(row.iloc[0])
                             
+                            if not sku or sku == 'nan':
+                                continue
+                            
+                            # Flexible Name/Description
+                            name = None
+                            for col in ['Description', 'Name', 'Item Name', 'description', 'name']:
+                                if col in df.columns:
+                                    name = clean(row[col])
+                                    break
+                            if not name and len(row) > 1:
+                                name = clean(row.iloc[1])
+                            if not name:
+                                name = 'Unknown'
+                            
+                            # Get other fields flexibly
+                            brand = ''
+                            for col in ['Brand', 'brand']:
+                                if col in df.columns:
+                                    brand = clean(row[col])
+                                    break
+                            
+                            packing = ''
+                            for col in ['Packing', 'packing']:
+                                if col in df.columns:
+                                    packing = clean(row[col])
+                                    break
+                            
+                            weight = 0.0
+                            for col in ['Weight', 'weight']:
+                                if col in df.columns and pd.notna(row[col]):
+                                    weight = float(row[col])
+                                    break
+                            
+                            uom = ''
+                            for col in ['UOM', 'Unit', 'uom', 'unit']:
+                                if col in df.columns:
+                                    uom = clean(row[col])
+                                    break
+                            
+                            price = 0.0
+                            for col in ['Price', 'price', 'Cost', 'cost']:
+                                if col in df.columns and pd.notna(row[col]):
+                                    price = float(row[col])
+                                    break
+                            
+                            min_stock = 10
+                            for col in ['Min Stock', 'Minimum', 'min_stock', 'minimum']:
+                                if col in df.columns and pd.notna(row[col]):
+                                    min_stock = int(row[col])
+                                    break
+                            
+                            # Check if item exists
+                            item = Item.query.filter_by(sku=sku).first()
+                            
+                            if not item:
+                                # Create new item
+                                item = Item(
+                                    sku=sku,
+                                    name=name,
+                                    description=name,
+                                    brand=brand,
+                                    packing=packing,
+                                    weight=weight,
+                                    uom=uom,
+                                    price=price,
+                                    min_stock=min_stock
+                                )
+                                db.session.add(item)
+                                count_new += 1
+                            else:
+                                # Update existing
+                                item.name = name
+                                item.description = name
+                                item.brand = brand
+                                item.packing = packing
+                                item.weight = weight
+                                item.uom = uom
+                                item.price = price
+                                item.min_stock = min_stock
+                                count_updated += 1
+                            
+                            # Commit in batches
+                            if (count_new + count_updated) % 50 == 0:
+                                db.session.commit()
+                                print(f"💾 Committed {count_new + count_updated} items...")
+                        
+                        except Exception as e:
+                            print(f"❌ Error on row {idx}: {e}")
+                            continue
+                    
                     db.session.commit()
-                    print(f"✅ Imported {count} items successfully")
-                    flash(f'Imported/Updated {count} items.')
-                    log_audit('IMPORT_ITEMS', f'Imported {count} items')
+                    print(f"✅ Import complete: {count_new} new, {count_updated} updated")
+                    flash(f'✅ Imported {count_new} new items, updated {count_updated} items')
+                    log_audit('IMPORT_ITEMS', f'Imported {count_new} new, updated {count_updated}')
                     
                 except Exception as e:
                     db.session.rollback()
