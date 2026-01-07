@@ -236,6 +236,16 @@ def init_db():
                     print("🛠️ Migrating: Adding min_stock column to Item")
                     db.session.execute(text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
 
+                # Fix for "Rogue" generic columns from CSV imports that shouldn't be there or shouldn't be NotNull
+                rogue_columns = ['Item Code', 'Description', 'Brand', 'Packing', 'Weight', 'UOM', 'Price', 'Min Stock']
+                for rogue in rogue_columns:
+                    if rogue in columns:
+                         try:
+                             print(f"🔧 Fixing Rogue Column: {rogue} -> DROP NOT NULL")
+                             db.session.execute(text(f'ALTER TABLE item ALTER COLUMN "{rogue}" DROP NOT NULL'))
+                         except Exception as e:
+                             print(f"⚠️ Could not fix {rogue}: {e}")
+
             if inspector.has_table('location'):
                 columns = [c['name'] for c in inspector.get_columns('location')]
                 print(f"📊 Current Location Columns: {columns}")
@@ -937,11 +947,12 @@ def admin_items():
                                 count_updated += 1
                             
                             # Commit in batches
-                            if (count_new + count_updated) % 50 == 0:
+                            if (count_new + count_updated) % 10 == 0:
                                 db.session.commit()
                                 print(f"💾 Committed {count_new + count_updated} items...")
                         
                         except Exception as e:
+                            db.session.rollback() # Reset session so next row can proceed
                             print(f"❌ Error on row {idx}: {e}")
                             continue
                     
