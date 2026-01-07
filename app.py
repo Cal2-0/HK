@@ -895,18 +895,23 @@ def get_location_inventory(location_id):
     except: return jsonify({'error': 'Error'}), 500
 
 # Ensure tables exist (Fix for Render/Gunicorn)
-with app.app_context():
-    db.create_all()
-    # Create default admin if not exists
-    if not User.query.filter_by(username='admin').first():
-        try:
-            admin = User(username='admin', role='admin')
-            admin.set_password('admin123')
-            db.session.add(admin)
-            db.session.commit()
-            print("👤 Created default admin user: admin / admin123")
-        except Exception as e:
-            print(f"Error creating admin: {e}")
+# Wrapped in try-except to prevent deployment crash if DB is unreachable
+try:
+    with app.app_context():
+        db.create_all()
+        # Create default admin if not exists
+        if not User.query.filter_by(username='admin').first():
+            try:
+                admin = User(username='admin', role='admin')
+                admin.set_password('admin123')
+                db.session.add(admin)
+                db.session.commit()
+                print("👤 Created default admin user: admin / admin123")
+            except Exception as e:
+                print(f"Error creating admin: {e}")
+except Exception as e:
+    print(f"⚠️ Startup Error (Database): {e}")
+    print("   Check your DATABASE_URL setting on Render!")
 
 if __name__ == '__main__':
     app.config['TEMPLATES_AUTO_RELOAD'] = True
