@@ -897,6 +897,16 @@ def get_location_inventory(location_id):
 # Ensure tables exist (Fix for Render/Gunicorn)
 with app.app_context():
     db.create_all()
+    # Create default admin if not exists
+    if not User.query.filter_by(username='admin').first():
+        try:
+            admin = User(username='admin', role='admin')
+            admin.set_password('admin123')
+            db.session.add(admin)
+            db.session.commit()
+            print("👤 Created default admin user: admin / admin123")
+        except Exception as e:
+            print(f"Error creating admin: {e}")
 
 if __name__ == '__main__':
     app.config['TEMPLATES_AUTO_RELOAD'] = True
