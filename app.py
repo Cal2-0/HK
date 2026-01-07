@@ -218,6 +218,24 @@ def init_db():
             print(f"❌ Database Initialization Failed: {e}")
             # Don't exit, let app try to run so /health can report error
 
+# Manual Init Route (Fix for missing tables)
+@app.route('/init-db')
+def manual_init():
+    try:
+        init_db()
+        return jsonify({"status": "success", "message": "Database initialized & Tables created."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# Manual Init Route (Fix for missing tables)
+@app.route('/init-db')
+def manual_init():
+    try:
+        init_db()
+        return jsonify({"status": "success", "message": "Database initialized & Tables created."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 # Run init immediately to fail fast in logs or prepare for requests
 # CRITICAL FIX: Do NOT run this globally on Render/Gunicorn as it causes boot timeouts if DB is slow!
 # init_db()
