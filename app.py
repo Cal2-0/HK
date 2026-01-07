@@ -194,12 +194,48 @@ def init_db():
             inspector = db.inspect(db.engine)
             if inspector.has_table('item'): 
                 columns = [c['name'] for c in inspector.get_columns('item')]
+                print(f"📊 Current Item Columns: {columns}")
+                
+                # Critical Columns to fix 'UndefinedColumn' errors
+                # (sku, name, description, brand, packing, weight, uom, price, min_stock)
+                
+                if 'name' not in columns:
+                    print("🛠️ Migrating: Adding name column")
+                    db.session.execute(text("ALTER TABLE item ADD COLUMN name VARCHAR(100) DEFAULT 'Unknown'"))
+                
+                if 'sku' not in columns:
+                    print("🛠️ Migrating: Adding sku column")
+                    # Note: Unique constraint is hard to add blindly, but column is needed
+                    db.session.execute(text("ALTER TABLE item ADD COLUMN sku VARCHAR(50)"))
+
+                if 'description' not in columns:
+                    print("🛠️ Migrating: Adding description column")
+                    db.session.execute(text("ALTER TABLE item ADD COLUMN description VARCHAR(200)"))
+
+                if 'brand' not in columns:
+                    print("🛠️ Migrating: Adding brand column")
+                    db.session.execute(text("ALTER TABLE item ADD COLUMN brand VARCHAR(50)"))
+
+                if 'packing' not in columns:
+                    print("🛠️ Migrating: Adding packing column")
+                    db.session.execute(text("ALTER TABLE item ADD COLUMN packing VARCHAR(50)"))
+
+                if 'weight' not in columns:
+                    print("🛠️ Migrating: Adding weight column")
+                    db.session.execute(text("ALTER TABLE item ADD COLUMN weight FLOAT DEFAULT 0.0"))
+
+                if 'uom' not in columns:
+                    print("🛠️ Migrating: Adding uom column")
+                    db.session.execute(text("ALTER TABLE item ADD COLUMN uom VARCHAR(20)"))
+
                 if 'price' not in columns:
                     print("🛠️ Migrating: Adding price column to Item")
                     db.session.execute(text("ALTER TABLE item ADD COLUMN price FLOAT DEFAULT 0.0"))
+                
                 if 'min_stock' not in columns:
                     print("🛠️ Migrating: Adding min_stock column to Item")
                     db.session.execute(text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
+
             
             # Ensure Admin Exists
             if 'user' in inspector.get_table_names() or inspector.has_table('user'):
