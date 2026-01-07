@@ -190,7 +190,10 @@ def check_db_schema():
         except Exception as e:
             print(f"Schema Check Error: {e}")
 
-check_db_schema()
+try:
+    check_db_schema()
+except Exception as e:
+    print(f"⚠️ Schema Check Skipped (DB Error): {e}")
 
 # --- Helpers ---
 @login_manager.user_loader
