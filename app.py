@@ -578,6 +578,11 @@ def admin_db():
             
     return render_template('admin_db.html', tables=tables, current_table=current_table, data=data, columns=columns)
 
+@app.template_filter('add_hours')
+def add_hours_filter(dt, hours):
+    if not dt: return dt
+    return dt + timedelta(hours=int(hours))
+
 @app.route('/admin/import_inventory', methods=['GET', 'POST'])
 @login_required
 def admin_import_inventory():
@@ -597,40 +602,32 @@ def admin_import_inventory():
 
         if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
             try:
-                # Read Excel without headers (header=None) since user image implies no header or we just want by index
-                # User image shows data starting row 1. Let's assume headers exist or try to detect.
-                # Actually, standard is usually Row 1 = Headers.
-                # Let's read normally. 
                 df = pd.read_excel(file)
                 
-                # Normalize column names
-                # Map by index if names don't match? 
-                # Let's try to map by index if columns are unnamed, or look for specific keywords
-                # But safer to assume column order from image:
-                # 0: Location (C307)
-                # 1: SKU (POU0033)
-                # 2: Desc (CHICKEN...)
-                # 3: Expiry (Sep-26)
-                # 4: Qty (1260)
-                # 5: Pallets (20) - optional?
-
-                count = 0
-                errors = 0
+                # 1. OPTIMIZATION: Pre-fetch Cache
+                # Load all items and locations into dictionaries for O(1) lookup
+                # sku -> item_id
+                item_map = {item.sku: item.id for item in Item.query.all()}
+                # name -> loc_id
+                loc_map = {loc.name: loc.id for loc in Location.query.all()}
                 
-                # Helper for date parsing (Sep-26 -> 09/26)
+                new_items_to_add = []
+                new_locs_to_add = []
+                
+                # Helper for date parsing
                 def parse_date_str(d_str):
                     if not isinstance(d_str, str): return ''
                     try:
-                        # Try parsing "Sep-26"
                         dt = datetime.strptime(d_str, '%b-%y')
                         return dt.strftime('%m/%y')
                     except:
-                        return d_str # Return as is if fail, maybe it's already MM/YY
+                        return d_str 
 
+                rows_data = [] # Store processed row data for second pass
+
+                # Pass 1: Identification & New Object Creation prep
                 for index, row in df.iterrows():
                     try:
-                        # Access by integer location to be safe against header naming
-                        # row.iloc[0] is Location, etc.
                         loc_name = str(row.iloc[0]).strip()
                         sku = str(row.iloc[1]).strip()
                         desc = str(row.iloc[2]).strip()
@@ -639,52 +636,99 @@ def admin_import_inventory():
                         pallets = int(row.iloc[5] if len(row) > 5 and pd.notna(row.iloc[5]) else 0)
 
                         if not sku or sku == 'nan': continue
-                        if qty <= 0: continue # Skip zero qty?? Or maybe allow 0 for list? User said "current inventory", usually > 0
+                        if qty <= 0: continue
 
-                        # 1. Resolve/Create Item
-                        item = Item.query.filter_by(sku=sku).first()
-                        if not item:
-                            item = Item(sku=sku, name=desc, description=desc)
-                            db.session.add(item)
-                            db.session.flush() # get ID
+                        # Check Cache for Item
+                        if sku not in item_map:
+                            # Avoid duplicates in batch
+                            if sku not in [i.sku for i in new_items_to_add] and sku not in item_map:
+                                new_item = Item(sku=sku, name=desc, description=desc)
+                                new_items_to_add.append(new_item)
+                                # Add to temp map to avoid creating twice in same loop
+                                # But we don't have ID yet. We'll handle this after flush.
                         
-                        # 2. Resolve/Create Location
-                        loc = Location.query.filter_by(name=loc_name).first()
-                        if not loc:
-                            loc = Location(name=loc_name)
-                            db.session.add(loc)
-                            db.session.flush()
+                        # Check Cache for Location
+                        if loc_name not in loc_map:
+                             if loc_name not in [l.name for l in new_locs_to_add] and loc_name not in loc_map:
+                                new_loc = Location(name=loc_name)
+                                new_locs_to_add.append(new_loc)
 
-                        # 3. Parse Expiry
                         expiry = parse_date_str(expiry_raw)
+                        rows_data.append({
+                           'sku': sku, 'loc_name': loc_name, 'qty': qty, 'expiry': expiry, 'pallets': pallets
+                        })
+
+                    except Exception as e:
+                        print(f"Pass 1 Error Row {index}: {e}")
+
+                # Bulk Save New Objects
+                if new_items_to_add:
+                    db.session.add_all(new_items_to_add)
+                    print(f"Creating {len(new_items_to_add)} new items...")
+                if new_locs_to_add:
+                    db.session.add_all(new_locs_to_add)
+                    print(f"Creating {len(new_locs_to_add)} new locations...")
+                
+                if new_items_to_add or new_locs_to_add:
+                    db.session.commit() # Commit to generate IDs
+                    
+                    # Refresh Cache with new IDs
+                    for i in new_items_to_add: item_map[i.sku] = i.id
+                    for l in new_locs_to_add: loc_map[l.name] = l.id
+                
+                # Double check cache refresh (re-query if paranoid, but list above should work if persisted)
+                # Let's re-query to be 100% sure we have all IDs
+                if new_items_to_add: 
+                    item_map = {item.sku: item.id for item in Item.query.all()}
+                if new_locs_to_add:
+                    loc_map = {loc.name: loc.id for loc in Location.query.all()}
+
+
+                # Pass 2: Inventory Upsert
+                # Pre-fetch ALL relevant inventory? Or just insert/update blindly?
+                # For 800 items, pre-fetching is better. 
+                # Map: (item_id, loc_id, expiry) -> Inventory Object
+                all_inv = Inventory.query.all()
+                inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in all_inv}
+                
+                count = 0
+                errors = 0
+                
+                for data in rows_data:
+                    try:
+                        i_id = item_map.get(data['sku'])
+                        l_id = loc_map.get(data['loc_name'])
                         
-                        # 4. Update Inventory
-                        # Check if batch exists
-                        inv = Inventory.query.filter_by(item_id=item.id, location_id=loc.id, expiry=expiry).first()
+                        if not i_id or not l_id: 
+                            errors += 1
+                            continue
+                            
+                        key = (i_id, l_id, data['expiry'])
+                        inv = inv_map.get(key)
+                        
                         if inv:
-                            inv.quantity += qty # Add to existing? Or Replace? "Import" usually implies Adding to system.
-                            # But if it's a full stock take upload... 
-                            # User said: "add the current inventory". I will ADD.
+                            inv.quantity += data['qty']
                         else:
                             inv = Inventory(
-                                item_id=item.id,
-                                location_id=loc.id,
-                                quantity=qty,
-                                expiry=expiry,
-                                pallets=pallets,
+                                item_id=i_id,
+                                location_id=l_id,
+                                quantity=data['qty'],
+                                expiry=data['expiry'],
+                                pallets=data['pallets'],
                                 worker_name=current_user.username,
                                 remarks='Bulk Import'
                             )
                             db.session.add(inv)
+                            inv_map[key] = inv # Update map in case duplicate in file
                         
-                        # 5. Log Transaction
+                        # Transaction Log (Bulk insert later? No, session.add is fine, SQLAlchemy batches it)
                         trans = Transaction(
-                            type='IN', # or IMPORT
-                            item_id=item.id,
-                            location_id=loc.id,
-                            quantity=qty,
-                            expiry=expiry,
-                            pallets=pallets,
+                            type='IN',
+                            item_id=i_id,
+                            location_id=l_id,
+                            quantity=data['qty'],
+                            expiry=data['expiry'],
+                            pallets=data['pallets'],
                             user_id=current_user.id,
                             worker_name=current_user.username,
                             remarks='Bulk Import'
@@ -693,9 +737,9 @@ def admin_import_inventory():
                         count += 1
                         
                     except Exception as e:
-                        print(f"Row {index} error: {e}")
                         errors += 1
-                
+                        print(f"Pass 2 Error: {e}")
+
                 db.session.commit()
                 flash(f'Successfully imported {count} items. {errors} errors.')
                 log_audit('IMPORT_INVENTORY', f'Imported {count} items from {file.filename}')
