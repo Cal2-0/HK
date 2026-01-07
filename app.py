@@ -227,14 +227,7 @@ def manual_init():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# Manual Init Route (Fix for missing tables)
-@app.route('/init-db')
-def manual_init():
-    try:
-        init_db()
-        return jsonify({"status": "success", "message": "Database initialized & Tables created."})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 # Run init immediately to fail fast in logs or prepare for requests
 # CRITICAL FIX: Do NOT run this globally on Render/Gunicorn as it causes boot timeouts if DB is slow!
@@ -249,6 +242,17 @@ def load_user(user_id):
     except Exception as e:
         print(f"⚠️ User Loader Error: {e}")
         return None
+
+# Lazy Intialization Pattern
+with app.app_context():
+    app.config['DB_INITIALIZED'] = False
+
+@app.before_request
+def initialize_database_on_first_request():
+    if not app.config.get('DB_INITIALIZED'):
+        app.config['DB_INITIALIZED'] = True
+        try: init_db()
+        except: pass
 
 
 
