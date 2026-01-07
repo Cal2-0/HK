@@ -215,23 +215,47 @@ def init_db():
 # CRITICAL FIX: Do NOT run this globally on Render/Gunicorn as it causes boot timeouts if DB is slow!
 # init_db()
 
-# Lazy Initialization Pattern
+# --- Emergency No-Login Mode ---
+class MockUser(UserMixin):
+    id = 1
+    username = 'admin'
+    role = 'admin'
+    active = True
+    
+    def is_admin(self): return True
+    def is_manager(self): return True
+    def get_id(self): return "1"
+
+# Override user_loader to ALWAYS return MockUser
+@login_manager.user_loader
+def load_user(user_id):
+    return MockUser()
+
+# Lazy Intialization Pattern
 with app.app_context():
     app.config['DB_INITIALIZED'] = False
 
 @app.before_request
 def initialize_database_on_first_request():
+    # 1. Lazy DB Init
     if not app.config.get('DB_INITIALIZED'):
-        # Prevent concurrency issues in simple deployments
         app.config['DB_INITIALIZED'] = True
         init_db()
+        
+    # 2. Force Login (Emergency Mode)
+    if not current_user.is_authenticated:
+        try:
+            from flask_login import login_user
+            u = MockUser()
+            login_user(u, force=True)
+        except: pass
 
-# --- Helpers ---
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
+@app.template_filter('add_hours')
+def add_hours_filter(dt, hours):
+    if not dt: return dt
+    return dt + timedelta(hours=int(hours))
 
-def resolve_location(loc_input):
+# --- Routes ---
     loc = Location.query.filter(Location.name.ilike(loc_input)).first()
     if loc: return loc.id
     
@@ -291,27 +315,15 @@ def health_check():
 
 @app.route('/')
 def index():
-    if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
-    return redirect(url_for('login'))
+    return redirect(url_for('dashboard'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        user = User.query.filter_by(username=username).first()
-        if user and user.check_password(password):
-            login_user(user)
-            return redirect(url_for('dashboard'))
-        flash('Invalid username or password')
-    return render_template('login.html')
+    return redirect(url_for('dashboard'))
 
 @app.route('/logout')
-@login_required
 def logout():
-    logout_user()
-    return redirect(url_for('login'))
+    return redirect(url_for('dashboard'))
 
 @app.route('/incoming', methods=['GET', 'POST'])
 @login_required
@@ -873,45 +885,55 @@ def admin_users():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    total_items = Inventory.query.filter(Inventory.quantity > 0).count()
-    total_locations = Location.query.count()
-    
-    # OPTIMIZED: Calculate total value in DB to handle nulls and avoid N+1
-    from sqlalchemy import func
-    total_value_qry = db.session.query(func.sum(Inventory.quantity * Item.price)).join(Item).filter(Inventory.quantity > 0).scalar()
-    total_value = total_value_qry or 0
-    
-    # 4. Low Stock Items
-    stock_levels = db.session.query(Item.id, Item.name, Item.min_stock, func.sum(Inventory.quantity)).outerjoin(Inventory).group_by(Item.id).all()
-    low_stock_items = [{'name': s[1], 'qty': s[3] or 0, 'min': s[2]} for s in stock_levels if (s[3] or 0) < (s[2] or 0)]
-    
-    # 5. Expiry Check - Needs Inventory Iteration but eager load Item is not needed, just expiry string
-    # Eager load item just in case we display name
-    inventory = Inventory.query.options(joinedload(Inventory.item)).filter(Inventory.quantity > 0).all()
-    expiring_items = [i for i in inventory if check_expiry(i.expiry) in ['expired', 'expiring']]
-    
-    # 6. Chart Data (Original Logic)
-    last_30 = datetime.now() - timedelta(days=30)
-    txs = Transaction.query.filter(Transaction.timestamp >= last_30).all()
-    
-    chart_data = {}
-    for i in range(31):
-        d = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-        chart_data[d] = {'in': 0, 'out': 0}
+    try:
+        # DB Might still fail if connection is broken
+        total_items = Inventory.query.filter(Inventory.quantity > 0).count()
+        total_locations = Location.query.count()
         
-    for t in txs:
-        d_str = t.timestamp.strftime('%Y-%m-%d')
-        if d_str in chart_data:
-            chart_data[d_str][t.type.lower()] += 1
+        # OPTIMIZED: Calculate total value in DB to handle nulls and avoid N+1
+        from sqlalchemy import func
+        total_value_qry = db.session.query(func.sum(Inventory.quantity * Item.price)).join(Item).filter(Inventory.quantity > 0).scalar()
+        total_value = total_value_qry or 0
+        
+        # 4. Low Stock Items
+        stock_levels = db.session.query(Item.id, Item.name, Item.min_stock, func.sum(Inventory.quantity)).outerjoin(Inventory).group_by(Item.id).all()
+        low_stock_items = [{'name': s[1], 'qty': s[3] or 0, 'min': s[2]} for s in stock_levels if (s[3] or 0) < (s[2] or 0)]
+        
+        # 5. Expiry Check - Needs Inventory Iteration but eager load Item is not needed, just expiry string
+        # Eager load item just in case we display name
+        inventory = Inventory.query.options(joinedload(Inventory.item)).filter(Inventory.quantity > 0).all()
+        expiring_items = [i for i in inventory if check_expiry(i.expiry) in ['expired', 'expiring']]
+        
+        # 6. Chart Data (Original Logic)
+        last_30 = datetime.now() - timedelta(days=30)
+        txs = Transaction.query.filter(Transaction.timestamp >= last_30).all()
+        
+        chart_data = {}
+        for i in range(31):
+            d = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+            chart_data[d] = {'in': 0, 'out': 0}
             
-    dates = sorted(chart_data.keys())
-    
-    return render_template('dashboard.html', 
-        total_items=total_items, total_locations=total_locations, total_value=total_value,
-        low_stock_items=low_stock_items, expiring_items=expiring_items,
-        items=inventory, locations=[], chart_dates=dates,
-        chart_in=[chart_data[d]['in'] for d in dates], chart_out=[chart_data[d]['out'] for d in dates]
-    )
+        for t in txs:
+            d_str = t.timestamp.strftime('%Y-%m-%d')
+            if d_str in chart_data:
+                chart_data[d_str][t.type.lower()] += 1
+                
+        dates = sorted(chart_data.keys())
+        
+        return render_template('dashboard.html', 
+            total_items=total_items, total_locations=total_locations, total_value=total_value,
+            low_stock_items=low_stock_items, expiring_items=expiring_items,
+            items=inventory, locations=[], chart_dates=dates,
+            chart_in=[chart_data[d]['in'] for d in dates], chart_out=[chart_data[d]['out'] for d in dates]
+        )
+    except Exception as e:
+        print(f"⚠️ Dashboard DB Error: {e}")
+        # Return empty dashboard to allow access
+        return render_template('dashboard.html', 
+            total_items=0, total_locations=0, total_value=0,
+            low_stock_items=[], expiring_items=[], items=[], locations=[], chart_dates=[], chart_in=[], chart_out=[],
+            error=f"Database Disconnected: {e}"
+        )
 
 
 @app.route('/warehouse')
