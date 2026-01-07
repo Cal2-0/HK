@@ -306,7 +306,10 @@ def initialize_database_on_first_request():
     if not app.config.get('DB_INITIALIZED'):
         app.config['DB_INITIALIZED'] = True
         try: init_db()
-        except: pass
+        except Exception as e:
+            print(f"❌ Critical Init Error: {e}")
+            # Don't pass, let it print
+
 
 
 
