@@ -212,7 +212,19 @@ def init_db():
             # Don't exit, let app try to run so /health can report error
 
 # Run init immediately to fail fast in logs or prepare for requests
-init_db()
+# CRITICAL FIX: Do NOT run this globally on Render/Gunicorn as it causes boot timeouts if DB is slow!
+# init_db()
+
+# Lazy Initialization Pattern
+with app.app_context():
+    app.config['DB_INITIALIZED'] = False
+
+@app.before_request
+def initialize_database_on_first_request():
+    if not app.config.get('DB_INITIALIZED'):
+        # Prevent concurrency issues in simple deployments
+        app.config['DB_INITIALIZED'] = True
+        init_db()
 
 # --- Helpers ---
 @login_manager.user_loader
