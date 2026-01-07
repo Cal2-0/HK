@@ -19,6 +19,11 @@ database_url = os.environ.get('DATABASE_URL', 'sqlite:///inventory_v2_expiry.db'
 if database_url and database_url.startswith('postgres://'):
     # Convert postgres:// to postgresql:// for SQLAlchemy
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    print("✅ Using PostgreSQL Database")
+else:
+    print("⚠️  WARNING: Using SQLite Database. Data WILL BE LOST on restart!")
+    print("   To fix: Deploy using the 'Blueprints' tab on Render or set DATABASE_URL.")
+
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
