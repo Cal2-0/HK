@@ -894,8 +894,10 @@ def get_location_inventory(location_id):
         return jsonify({'inventory': results, 'location': {'name': location.name, 'used': location.get_used_pallets(), 'free': location.get_free_pallets()}})
     except: return jsonify({'error': 'Error'}), 500
 
+# Ensure tables exist (Fix for Render/Gunicorn)
+with app.app_context():
+    db.create_all()
+
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()
     app.config['TEMPLATES_AUTO_RELOAD'] = True
     app.run(debug=True, port=int(os.environ.get('PORT', 5001)), use_reloader=True)
