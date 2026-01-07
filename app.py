@@ -700,20 +700,39 @@ def admin_import_inventory():
         if file.filename == '' or not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
              return redirect(request.url)
         try:
-            df = pd.read_excel(file)
+            print(f"📂 Processing Inventory Import: {file.filename}")
+            try:
+                df = pd.read_excel(file, engine='openpyxl')
+            except:
+                df = pd.read_excel(file, engine='xlrd')
+
             item_map = {item.sku: item.id for item in Item.query.all()}
             loc_map = {loc.name: loc.id for loc in Location.query.all()}
             new_items, new_locs = [], []
             
             rows_data = []
-            for _, row in df.iterrows():
+            for idx, row in df.iterrows():
                 try:
+                    # Robust flexible column access using iloc (Column 0=Loc, 1=SKU, 2=Desc...)
+                    # or named columns if possible. Let's stick to iloc for legacy support but add bounds check.
+                    if len(row) < 3: continue
+                    
                     loc_name = str(row.iloc[0]).strip()
                     sku = str(row.iloc[1]).strip()
                     desc = str(row.iloc[2]).strip()
-                    expiry_raw = str(row.iloc[3]).strip()
-                    qty = float(row.iloc[4] if pd.notna(row.iloc[4]) else 0)
-                    pallets = int(row.iloc[5] if len(row) > 5 and pd.notna(row.iloc[5]) else 0)
+                    
+                    expiry_raw = ''
+                    if len(row) > 3: expiry_raw = str(row.iloc[3]).strip()
+                    
+                    qty = 0.0
+                    if len(row) > 4 and pd.notna(row.iloc[4]):
+                         try: qty = float(row.iloc[4])
+                         except: pass
+                         
+                    pallets = 0
+                    if len(row) > 5 and pd.notna(row.iloc[5]):
+                        try: pallets = int(row.iloc[5])
+                        except: pass
 
                     if not sku or sku == 'nan' or qty <= 0: continue
                     
@@ -731,7 +750,8 @@ def admin_import_inventory():
                         except: pass
                     
                     rows_data.append({'sku': sku, 'loc_name': loc_name, 'qty': qty, 'expiry': expiry, 'pallets': pallets})
-                except: pass
+                except Exception as e:
+                     print(f"⚠️ Error row {idx}: {e}")
 
             if new_items: db.session.add_all(new_items)
             if new_locs: db.session.add_all(new_locs)
@@ -957,9 +977,8 @@ def admin_items():
 @app.route('/admin/locations', methods=['GET', 'POST'])
 @login_required
 def admin_locations():
-    if not current_user.is_admin():
-        flash('Access denied.')
-        return redirect(url_for('dashboard'))
+    if not current_user.is_admin(): return redirect(url_for('dashboard'))
+    
     if request.method == 'POST':
         action = request.form.get('action')
         
@@ -967,18 +986,29 @@ def admin_locations():
             file = request.files['file']
             if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
                 try:
-                    df = pd.read_excel(file)
+                    print(f"📂 Processing Location Import: {file.filename}")
+                    try: df = pd.read_excel(file, engine='openpyxl')
+                    except: df = pd.read_excel(file, engine='xlrd')
+                    
                     count = 0
                     for _, row in df.iterrows():
-                        name = str(row.get('Loc', '')).strip()
+                        name = str(row.iloc[0]).strip() if len(row) > 0 else ''
                         if not name or name == 'nan': continue
-                        if not Location.query.filter_by(name=name).first():
-                            db.session.add(Location(name=name)); count += 1
-                    db.session.commit(); flash(f'Imported {count} locations.')
+                        
+                        loc = Location.query.filter_by(name=name).first()
+                        if not loc:
+                            db.session.add(Location(name=name))
+                            count += 1
+                            
+                    db.session.commit()
+                    flash(f'Imported {count} locations.')
                     log_audit('IMPORT_LOCATIONS', f'Imported {count} locations')
-                except Exception as e: flash(f'Error: {e}')
+                except Exception as e:
+                    import traceback
+                    flash(f'Error: {e}')
+                    print(traceback.format_exc())
             return redirect(url_for('admin_locations'))
-        
+
         if action == 'add':
             name = request.form.get('name')
             if Location.query.filter_by(name=name).first(): flash('Exists.')
