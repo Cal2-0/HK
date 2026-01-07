@@ -6,6 +6,46 @@
   <p>Detailed transaction history (Last 500 records)</p>
 </div>
 
+<!-- Audit Logs Section -->
+<h2 style="margin-top: 1.5rem; margin-bottom: 1rem; font-size: 1.25rem; color: var(--text-muted);">Admin Audit Trail
+</h2>
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>User</th>
+          <th>Action</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for audit in audit_logs %}
+        <tr>
+          <td style="white-space: nowrap;">
+            {{ audit.timestamp.strftime('%Y-%m-%d %H:%M') }}
+          </td>
+          <td>
+            <span class="badge" style="background: var(--bg-input);">{{ audit.username }}</span>
+          </td>
+          <td>
+            <span class="badge" style="background: rgba(59, 130, 246, 0.2); color: #3b82f6;">{{ audit.action }}</span>
+          </td>
+          <td>{{ audit.details }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 1rem;">No audit logs yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Transaction Logs Section -->
+<h2 style="margin-bottom: 1rem; font-size: 1.25rem; color: var(--text-muted);">Stock Movements</h2>
 <div class="card">
   <div class="table-responsive">
     <table class="table">
@@ -44,12 +84,13 @@
             style="color: {% if log.type == 'IN' %}var(--success){% else %}var(--danger){% endif %}; font-weight: 600;">
             {{ "+" if log.type == 'IN' else "-" }}{{ log.quantity | abs }}
           </td>
+          <td>{{ log.pallets or '-' }}</td>
           <td>{{ log.worker_name or (log.user.username if log.user else 'System') }}</td>
           <td>{{ log.remarks or '-' }}</td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="11" style="text-align: center;">No logs found.</td>
+          <td colspan="12" style="text-align: center;">No logs found.</td>
         </tr>
         {% endfor %}
       </tbody>

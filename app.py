@@ -578,6 +578,136 @@ def admin_db():
             
     return render_template('admin_db.html', tables=tables, current_table=current_table, data=data, columns=columns)
 
+@app.route('/admin/import_inventory', methods=['GET', 'POST'])
+@login_required
+def admin_import_inventory():
+    if not current_user.is_admin():
+        flash('Access denied.')
+        return redirect(url_for('dashboard'))
+
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('No file part')
+            return redirect(request.url)
+        
+        file = request.files['file']
+        if file.filename == '':
+            flash('No selected file')
+            return redirect(request.url)
+
+        if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+            try:
+                # Read Excel without headers (header=None) since user image implies no header or we just want by index
+                # User image shows data starting row 1. Let's assume headers exist or try to detect.
+                # Actually, standard is usually Row 1 = Headers.
+                # Let's read normally. 
+                df = pd.read_excel(file)
+                
+                # Normalize column names
+                # Map by index if names don't match? 
+                # Let's try to map by index if columns are unnamed, or look for specific keywords
+                # But safer to assume column order from image:
+                # 0: Location (C307)
+                # 1: SKU (POU0033)
+                # 2: Desc (CHICKEN...)
+                # 3: Expiry (Sep-26)
+                # 4: Qty (1260)
+                # 5: Pallets (20) - optional?
+
+                count = 0
+                errors = 0
+                
+                # Helper for date parsing (Sep-26 -> 09/26)
+                def parse_date_str(d_str):
+                    if not isinstance(d_str, str): return ''
+                    try:
+                        # Try parsing "Sep-26"
+                        dt = datetime.strptime(d_str, '%b-%y')
+                        return dt.strftime('%m/%y')
+                    except:
+                        return d_str # Return as is if fail, maybe it's already MM/YY
+
+                for index, row in df.iterrows():
+                    try:
+                        # Access by integer location to be safe against header naming
+                        # row.iloc[0] is Location, etc.
+                        loc_name = str(row.iloc[0]).strip()
+                        sku = str(row.iloc[1]).strip()
+                        desc = str(row.iloc[2]).strip()
+                        expiry_raw = str(row.iloc[3]).strip()
+                        qty = float(row.iloc[4] if pd.notna(row.iloc[4]) else 0)
+                        pallets = int(row.iloc[5] if len(row) > 5 and pd.notna(row.iloc[5]) else 0)
+
+                        if not sku or sku == 'nan': continue
+                        if qty <= 0: continue # Skip zero qty?? Or maybe allow 0 for list? User said "current inventory", usually > 0
+
+                        # 1. Resolve/Create Item
+                        item = Item.query.filter_by(sku=sku).first()
+                        if not item:
+                            item = Item(sku=sku, name=desc, description=desc)
+                            db.session.add(item)
+                            db.session.flush() # get ID
+                        
+                        # 2. Resolve/Create Location
+                        loc = Location.query.filter_by(name=loc_name).first()
+                        if not loc:
+                            loc = Location(name=loc_name)
+                            db.session.add(loc)
+                            db.session.flush()
+
+                        # 3. Parse Expiry
+                        expiry = parse_date_str(expiry_raw)
+                        
+                        # 4. Update Inventory
+                        # Check if batch exists
+                        inv = Inventory.query.filter_by(item_id=item.id, location_id=loc.id, expiry=expiry).first()
+                        if inv:
+                            inv.quantity += qty # Add to existing? Or Replace? "Import" usually implies Adding to system.
+                            # But if it's a full stock take upload... 
+                            # User said: "add the current inventory". I will ADD.
+                        else:
+                            inv = Inventory(
+                                item_id=item.id,
+                                location_id=loc.id,
+                                quantity=qty,
+                                expiry=expiry,
+                                pallets=pallets,
+                                worker_name=current_user.username,
+                                remarks='Bulk Import'
+                            )
+                            db.session.add(inv)
+                        
+                        # 5. Log Transaction
+                        trans = Transaction(
+                            type='IN', # or IMPORT
+                            item_id=item.id,
+                            location_id=loc.id,
+                            quantity=qty,
+                            expiry=expiry,
+                            pallets=pallets,
+                            user_id=current_user.id,
+                            worker_name=current_user.username,
+                            remarks='Bulk Import'
+                        )
+                        db.session.add(trans)
+                        count += 1
+                        
+                    except Exception as e:
+                        print(f"Row {index} error: {e}")
+                        errors += 1
+                
+                db.session.commit()
+                flash(f'Successfully imported {count} items. {errors} errors.')
+                log_audit('IMPORT_INVENTORY', f'Imported {count} items from {file.filename}')
+                
+            except Exception as e:
+                db.session.rollback()
+                flash(f'Error processing file: {str(e)}')
+                
+        return redirect(url_for('dashboard'))
+
+    return render_template('import_inventory.html')
+
 @app.route('/admin/items', methods=['GET', 'POST'])
 @login_required
 def admin_items():
@@ -627,6 +757,7 @@ def admin_items():
                             item.uom = clean(row.get('UOM', ''))
                     db.session.commit()
                     flash(f'Successfully imported/updated {count} items.')
+                    log_audit('IMPORT_ITEMS', f'Imported/Updated {count} items via Excel')
                 except Exception as e:
                     db.session.rollback()
                     flash(f'Error processing file: {str(e)}')
@@ -651,6 +782,7 @@ def admin_items():
                     db.session.add(item)
                     db.session.commit()
                     flash('Item added successfully.')
+                    log_audit('ADD_ITEM', f'Added item {sku} - {request.form.get("name")}')
                 except Exception as e:
                     flash(f'Error adding item: {e}')
 
@@ -667,6 +799,7 @@ def admin_items():
                 item.uom = request.form.get('uom')
                 db.session.commit()
                 flash('Item updated.')
+                log_audit('EDIT_ITEM', f'Updated item {item.sku}')
 
         elif action == 'delete':
             item_id = request.form.get('item_id')
@@ -687,6 +820,7 @@ def admin_items():
                 db.session.delete(item)
                 db.session.commit()
                 flash('Item deleted.')
+                log_audit('DELETE_ITEM', f'Deleted item {item.sku}')
                 
         return redirect(url_for('admin_items'))
     
@@ -735,6 +869,7 @@ def admin_locations():
                                 count += 1
                     db.session.commit()
                     flash(f'Successfully imported {count} locations.')
+                    log_audit('IMPORT_LOCATIONS', f'Imported {count} locations via Excel')
                 except Exception as e:
                     flash(f'Error importing: {str(e)}')
             return redirect(url_for('admin_locations'))
@@ -754,6 +889,7 @@ def admin_locations():
                     db.session.add(loc)
                     db.session.commit()
                     flash('Location added.')
+                    log_audit('ADD_LOCATION', f'Added location {name}')
                 except Exception as e:
                     flash(f'Error: {e}')
         
@@ -766,6 +902,7 @@ def admin_locations():
                 loc.y = int(request.form.get('y') or 0)
                 db.session.commit()
                 flash('Location updated.')
+                log_audit('EDIT_LOCATION', f'Updated location {loc.name}')
 
         elif action == 'delete':
             loc_id = request.form.get('loc_id')
@@ -776,6 +913,7 @@ def admin_locations():
                 db.session.delete(loc)
                 db.session.commit()
                 flash('Location deleted.')
+                log_audit('DELETE_LOCATION', f'Deleted location {loc.name}')
         
         return redirect(url_for('admin_locations'))
 
@@ -871,7 +1009,8 @@ def logs():
     # Join queries are implicit with relationships, but let's be sure to eager load if performance matters. 
     # For now, simple access is fine for <10k rows.
     logs = Transaction.query.order_by(Transaction.timestamp.desc()).limit(500).all()
-    return render_template('logs.html', logs=logs)
+    audit_logs = AuditLog.query.order_by(AuditLog.timestamp.desc()).limit(100).all()
+    return render_template('logs.html', logs=logs, audit_logs=audit_logs)
 
 @app.route('/warehouse')
 @login_required
@@ -927,6 +1066,7 @@ def admin_users():
                     db.session.add(user)
                     db.session.commit()
                     flash('User created successfully.')
+                    log_audit('ADD_USER', f'Created user {username} ({role})')
                 except Exception as e:
                     flash(f'Error creating user: {e}')
         
@@ -940,6 +1080,7 @@ def admin_users():
                     user.set_password(password)
                 db.session.commit()
                 flash('User updated.')
+                log_audit('EDIT_USER', f'Updated user {user.username}')
         
         elif action == 'delete':
             user_id = request.form.get('user_id')
@@ -948,6 +1089,7 @@ def admin_users():
                 user.active = False
                 db.session.commit()
                 flash('User deactivated.')
+                log_audit('DEACTIVATE_USER', f'Deactivated user {user.username}')
             elif user and user.id == current_user.id:
                 flash('Cannot deactivate your own account.')
         
@@ -1127,7 +1269,7 @@ def reports():
             headers={"Content-Disposition": f"attachment;filename=inventory_report_{date.today()}.csv"}
         )
 
-    return render_template('reports.html', transactions=transactions, today=date.today())
+    return render_template('reports.html', transactions=transactions, today=date.today(), timedelta=timedelta)
 
 # API Route for Details
 @app.route('/api/location/<location_id>')

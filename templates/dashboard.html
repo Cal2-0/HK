@@ -22,58 +22,7 @@
 <div class="dashboard-grid" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem;">
 
   <!-- Top Row: KPI Tiles -->
-  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem;">
-    <!-- Value Tile -->
-    <div class="card" style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between;">
-      <div>
-        <p
-          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
-          Tot. Value</p>
-        <h3 style="margin: 0.25rem 0 0; font-size: 1.5rem; color: var(--success);">AED {{ "{:,.0f}".format(total_value)
-          }}</h3>
-      </div>
-      <div style="font-size: 2rem; opacity: 0.2;">💰</div>
-    </div>
-
-    <!-- Items Tile -->
-    <div class="card" style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between;">
-      <div>
-        <p
-          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
-          Batches</p>
-        <h3 style="margin: 0.25rem 0 0; font-size: 1.5rem; color: var(--text-main);">{{ total_items }}</h3>
-      </div>
-      <div style="font-size: 2rem; opacity: 0.2;">📦</div>
-    </div>
-
-    <!-- Low Stock Tile (Red if > 0) -->
-    <div class="card"
-      style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; border-left: 4px solid {{ 'var(--danger)' if low_stock_items else 'var(--success)' }};">
-      <div>
-        <p
-          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
-          Low Stock</p>
-        <h3
-          style="margin: 0.25rem 0 0; font-size: 1.5rem; color: {{ 'var(--danger)' if low_stock_items else 'var(--text-main)' }};">
-          {{ low_stock_items|length }}</h3>
-      </div>
-      <div style="font-size: 2rem; opacity: 0.2;">⚠️</div>
-    </div>
-
-    <!-- Expiring Tile (Orange if > 0) -->
-    <div class="card"
-      style="padding: 1.25rem; display: flex; align-items: center; justify-content: space-between; border-left: 4px solid {{ 'var(--warning)' if expiring_items else 'var(--success)' }};">
-      <div>
-        <p
-          style="margin: 0; color: var(--text-muted); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">
-          Expiring (30d)</p>
-        <h3
-          style="margin: 0.25rem 0 0; font-size: 1.5rem; color: {{ 'var(--warning)' if expiring_items else 'var(--text-main)' }};">
-          {{ expiring_items|length }}</h3>
-      </div>
-      <div style="font-size: 2rem; opacity: 0.2;">⏰</div>
-    </div>
-  </div>
+  <!-- Top Row: KPI Tiles (Removed per user request) -->
 
   <!-- Middle Row: Split View -->
   <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; align-items: start; min-height: 400px;">
