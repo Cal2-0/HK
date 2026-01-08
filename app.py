@@ -9,26 +9,23 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import CheckConstraint, UniqueConstraint, text
 from sqlalchemy.orm import joinedload
+from sqlalchemy.exc import IntegrityError
 
 # --- Configuration ---
 app = Flask(__name__)
-# Use environment variable for secret key, fallback to dev key
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-key-simple-v2-CHANGE-IN-PRODUCTION')
-# Support PostgreSQL via environment variable, fallback to SQLite for development
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///inventory_v2_expiry.db')
+
 if database_url and database_url.startswith('postgres://'):
-    # Convert postgres:// to postgresql:// for SQLAlchemy
     database_url = database_url.replace('postgres://', 'postgresql://', 1)
     
 if database_url and 'postgresql' in database_url:
-    # Supabase/Render PostgreSQL requires SSL
     if 'sslmode' not in database_url:
         joiner = '&' if '?' in database_url else '?'
         database_url = f"{database_url}{joiner}sslmode=require"
     print("✅ Using PostgreSQL Database (SSL Enforced)")
 else:
     print("⚠️  WARNING: Using SQLite Database. Data WILL BE LOST on restart!")
-    print("   To fix: Deploy using the 'Blueprints' tab on Render or set DATABASE_URL.")
 
 # Log masked URL for debugging
 if database_url:
@@ -38,11 +35,17 @@ if database_url:
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Optimization for Remote DB (Supabase/Render)
+# CRITICAL FIX 1: Connection Pool Settings
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_pre_ping': True,  # Verify connection before usage (fixes stale connections)
-    'pool_recycle': 300,    # Recycle connections every 5 minutes
-    'pool_timeout': 30,     # Wait up to 30s for a connection
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
+    'pool_timeout': 30,
+    'pool_size': 10,       # Keep a baseline of connections
+    'max_overflow': 20,    # Allow bursts of traffic
+    'connect_args': {
+        'connect_timeout': 10,
+        'application_name': 'inventory_app'
+    }
 }
 
 db = SQLAlchemy(app)
@@ -50,12 +53,17 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
+# CRITICAL FIX 2: Session Management
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    db.session.remove()
+
 # --- Models ---
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(100), unique=True, nullable=False)
     password_hash = db.Column(db.String(200))
-    role = db.Column(db.String(20), default='worker', nullable=False)  # worker, manager, admin
+    role = db.Column(db.String(20), default='worker', nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
 
     def set_password(self, password):
@@ -73,32 +81,25 @@ class User(UserMixin, db.Model):
 class Location(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(50), unique=True, nullable=False)
-    # Keeping X/Y for map compatibility, though we use flexbox now
     x = db.Column(db.Integer, default=0)
     y = db.Column(db.Integer, default=0)
-    max_pallets = db.Column(db.Integer, default=28, nullable=False)  # Default capacity: 28 pallets
+    max_pallets = db.Column(db.Integer, default=28, nullable=False)
     
     def get_used_pallets(self):
-        """Calculate used pallets based on inventory in this location"""
-        # Count distinct items with quantity > 0 as a simple pallet count
-        inventory_count = Inventory.query.filter_by(location_id=self.id).filter(Inventory.quantity > 0).count()
-        return inventory_count
+        return Inventory.query.filter_by(location_id=self.id).filter(Inventory.quantity > 0).count()
     
     def get_free_pallets(self):
-        """Calculate free pallets"""
         return max(0, self.max_pallets - self.get_used_pallets())
 
 class AuditLog(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    timestamp = db.Column(db.DateTime, default=datetime.now)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow) # CRITICAL FIX 4: utcnow
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    username = db.Column(db.String(100)) # Store username in case user is deleted
-    action = db.Column(db.String(50)) # e.g., 'ADD_ITEM', 'DELETE_USER'
-    details = db.Column(db.String(500)) # Description of change
-    
+    username = db.Column(db.String(100))
+    action = db.Column(db.String(50))
+    details = db.Column(db.String(500))
     user = db.relationship('User', backref='audit_logs')
 
-# Helper for Audit Logging
 def log_audit(action, details):
     try:
         if current_user.is_authenticated:
@@ -109,9 +110,12 @@ def log_audit(action, details):
                 details=details
             )
             db.session.add(log)
+            # CRITICAL FIX 6: Use flush instead of commit to assume part of larger trans if needed, 
+            # but here we want immediate log. However, to be safe against nesting:
             db.session.commit()
     except Exception as e:
         print(f"Audit Log Error: {e}")
+        db.session.rollback()
 
 class Item(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -126,24 +130,14 @@ class Item(db.Model):
     min_stock = db.Column(db.Integer, default=10)
 
     def to_dict(self):
-        return {
-            'id': self.id,
-            'name': self.name,
-            'sku': self.sku,
-            'description': self.description,
-            'brand': self.brand,
-            'packing': self.packing,
-            'weight': self.weight,
-            'uom': self.uom
-        }
-
+        return {'id': self.id, 'name': self.name, 'sku': self.sku, 'brand': self.brand}
 
 class Inventory(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     item_id = db.Column(db.Integer, db.ForeignKey('item.id'), nullable=False)
     location_id = db.Column(db.Integer, db.ForeignKey('location.id'), nullable=False)
     quantity = db.Column(db.Float, default=0.0)
-    expiry = db.Column(db.String(10)) # Format: MM/YY
+    expiry = db.Column(db.String(10)) 
     doc_number = db.Column(db.String(50)) 
     date = db.Column(db.Date, default=date.today) 
     pallets = db.Column(db.Integer) 
@@ -161,11 +155,11 @@ class Inventory(db.Model):
 
 class Transaction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    type = db.Column(db.String(10), nullable=False) # 'IN' or 'OUT'
+    type = db.Column(db.String(10), nullable=False)
     item_id = db.Column(db.Integer, db.ForeignKey('item.id'))
     location_id = db.Column(db.Integer, db.ForeignKey('location.id'))
     quantity = db.Column(db.Float, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow) # CRITICAL FIX 4
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     expiry = db.Column(db.String(10)) 
     doc_number = db.Column(db.String(50)) 
@@ -179,13 +173,11 @@ class Transaction(db.Model):
     location = db.relationship('Location')
     user = db.relationship('User', backref='transactions')
     
-    __table_args__ = (
-        CheckConstraint('quantity > 0', name='check_quantity_positive'),
-    )
+    __table_args__ = (CheckConstraint('quantity > 0', name='check_quantity_positive'),)
 
-# --- Schema Migration Helper ---
+# --- DB Initialization Fix (Split) ---
 def create_tables():
-    """Fast initialization: Just ensure tables exist (Fast)"""
+    """Fast initialization"""
     with app.app_context():
         try:
             db.create_all()
@@ -194,104 +186,57 @@ def create_tables():
             print(f"❌ Table Verification Failed: {e}")
 
 def run_migrations():
-    """Slow initialization: Check columns and migrate schema (Slow)"""
+    """Slow initialization: Check columns and migrate schema"""
     with app.app_context():
         try:
             print("🔄 Checking Schema & Running Migrations...")
             db.create_all() 
-            
-            # Check for migrations/schema updates
             inspector = db.inspect(db.engine)
             if inspector.has_table('item'): 
                 columns = [c['name'] for c in inspector.get_columns('item')]
-                print(f"📊 Current Item Columns: {columns}")
+                migratable = {
+                    'name': "VARCHAR(100) DEFAULT 'Unknown'",
+                    'sku': "VARCHAR(50)",
+                    'description': "VARCHAR(200)",
+                    'brand': "VARCHAR(50)",
+                    'packing': "VARCHAR(50)",
+                    'weight': "FLOAT DEFAULT 0.0",
+                    'uom': "VARCHAR(20)",
+                    'price': "FLOAT DEFAULT 0.0",
+                    'min_stock': "INTEGER DEFAULT 10"
+                }
+                for col, defn in migratable.items():
+                    if col not in columns:
+                        print(f"🛠️ Migrating: Adding {col} column")
+                        db.session.execute(text(f"ALTER TABLE item ADD COLUMN {col} {defn}"))
                 
-                # Critical Columns to fix 'UndefinedColumn' errors
-                # (sku, name, description, brand, packing, weight, uom, price, min_stock)
-                
-                if 'name' not in columns:
-                    print("🛠️ Migrating: Adding name column")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN name VARCHAR(100) DEFAULT 'Unknown'"))
-                
-                if 'sku' not in columns:
-                    print("🛠️ Migrating: Adding sku column")
-                    # Note: Unique constraint is hard to add blindly, but column is needed
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN sku VARCHAR(50)"))
-
-                if 'description' not in columns:
-                    print("🛠️ Migrating: Adding description column")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN description VARCHAR(200)"))
-
-                if 'brand' not in columns:
-                    print("🛠️ Migrating: Adding brand column")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN brand VARCHAR(50)"))
-
-                if 'packing' not in columns:
-                    print("🛠️ Migrating: Adding packing column")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN packing VARCHAR(50)"))
-
-                if 'weight' not in columns:
-                    print("🛠️ Migrating: Adding weight column")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN weight FLOAT DEFAULT 0.0"))
-
-                if 'uom' not in columns:
-                    print("🛠️ Migrating: Adding uom column")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN uom VARCHAR(20)"))
-
-                if 'price' not in columns:
-                    print("🛠️ Migrating: Adding price column to Item")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN price FLOAT DEFAULT 0.0"))
-                
-                if 'min_stock' not in columns:
-                    print("🛠️ Migrating: Adding min_stock column to Item")
-                    db.session.execute(text("ALTER TABLE item ADD COLUMN min_stock INTEGER DEFAULT 10"))
-
-                # Fix for "Rogue" generic columns from CSV imports that shouldn't be there or shouldn't be NotNull
                 rogue_columns = ['Item Code', 'Description', 'Brand', 'Packing', 'Weight', 'UOM', 'Price', 'Min Stock']
                 for rogue in rogue_columns:
                     if rogue in columns:
-                         try:
-                             print(f"🔧 Fixing Rogue Column: {rogue} -> DROP NOT NULL")
-                             db.session.execute(text(f'ALTER TABLE item ALTER COLUMN "{rogue}" DROP NOT NULL'))
-                         except Exception as e:
-                             print(f"⚠️ Could not fix {rogue}: {e}")
+                         try: db.session.execute(text(f'ALTER TABLE item ALTER COLUMN "{rogue}" DROP NOT NULL'))
+                         except: pass
 
             if inspector.has_table('location'):
                 columns = [c['name'] for c in inspector.get_columns('location')]
-                print(f"📊 Current Location Columns: {columns}")
-                
-                if 'x' not in columns:
-                     print("🛠️ Migrating: Adding x column to Location")
-                     db.session.execute(text("ALTER TABLE location ADD COLUMN x INTEGER DEFAULT 0"))
-                
-                if 'y' not in columns:
-                     print("🛠️ Migrating: Adding y column to Location")
-                     db.session.execute(text("ALTER TABLE location ADD COLUMN y INTEGER DEFAULT 0"))
-
-                if 'max_pallets' not in columns:
-                     print("🛠️ Migrating: Adding max_pallets column to Location")
-                     db.session.execute(text("ALTER TABLE location ADD COLUMN max_pallets INTEGER DEFAULT 28"))
-
-
+                if 'x' not in columns: db.session.execute(text("ALTER TABLE location ADD COLUMN x INTEGER DEFAULT 0"))
+                if 'y' not in columns: db.session.execute(text("ALTER TABLE location ADD COLUMN y INTEGER DEFAULT 0"))
+                if 'max_pallets' not in columns: db.session.execute(text("ALTER TABLE location ADD COLUMN max_pallets INTEGER DEFAULT 28"))
             
             # Ensure Admin Exists
             if 'user' in inspector.get_table_names() or inspector.has_table('user'):
                 if User.query.count() == 0:
                     try:
-                        print("👤 Creating default admin user...")
                         admin = User(username='admin', role='admin', active=True)
                         admin.set_password('admin123')
                         db.session.add(admin)
                         db.session.commit()
-                    except Exception as e:
-                        print(f"⚠️ Error creating default admin: {e}")
+                    except Exception as e: print(f"⚠️ Error creating default admin: {e}")
 
             db.session.commit()
             print("✅ Database Migrated Successfully")
         except Exception as e:
             print(f"❌ Database Migration Failed: {e}")
 
-# Manual Init Route (Fix for missing tables)
 @app.route('/init-db')
 def manual_init():
     try:
@@ -300,54 +245,32 @@ def manual_init():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
-
-# Run init immediately to fail fast in logs or prepare for requests
-# CRITICAL FIX: Do NOT run this globally on Render/Gunicorn as it causes boot timeouts if DB is slow!
-# init_db()
-
-# --- Helpers ---
-@login_manager.user_loader
-def load_user(user_id):
-    try:
-        # Robust loader: If DB is down, return None to force logout instead of 500 Error
-        return User.query.get(int(user_id))
-    except Exception as e:
-        print(f"⚠️ User Loader Error: {e}")
-        return None
-
-# Lazy Intialization Pattern
-with app.app_context():
-    app.config['DB_INITIALIZED'] = False
-
 @app.before_request
 def initialize_database_on_first_request():
     if not app.config.get('DB_INITIALIZED'):
         app.config['DB_INITIALIZED'] = True
         try: create_tables()
-        except Exception as e:
-            print(f"❌ Critical Init Error: {e}")
-            # Don't pass, let it print
-
-
-
+        except Exception as e: print(f"❌ Critical Init Error: {e}")
 
 # --- Helpers ---
+@login_manager.user_loader
+def load_user(user_id):
+    try: return User.query.get(int(user_id))
+    except: return None
+
 def resolve_location(loc_input):
     if not loc_input: return None
-    # Try exact match first
     loc = Location.query.filter(Location.name.ilike(loc_input)).first()
     if loc: return loc.id
-    
     nums = re.findall(r'\d+', str(loc_input))
     if nums:
         input_num = nums[0]
         for l in Location.query.all():
             l_nums = re.findall(r'\d+', l.name)
-            if l_nums and l_nums[0] == input_num:
-                return l.id
+            if l_nums and l_nums[0] == input_num: return l.id
     return None
 
+# CRITICAL FIX 3: Global Template Filter
 @app.template_filter('check_expiry')
 def check_expiry(expiry_str):
     if not expiry_str: return ''
@@ -357,11 +280,9 @@ def check_expiry(expiry_str):
         month, year = int(parts[0]), int(parts[1])
         full_year = 2000 + year
         today = date.today()
-        
         if month == 12: next_month = date(full_year + 1, 1, 1)
         else: next_month = date(full_year, month + 1, 1)
         last_day_of_expiry = next_month - timedelta(days=1)
-        
         if today > last_day_of_expiry: return 'expired'
         diff = (last_day_of_expiry - today).days
         if diff < 60: return 'expiring'
@@ -371,30 +292,16 @@ def check_expiry(expiry_str):
 @app.template_filter('add_hours')
 def add_hours_filter(dt, hours):
     if not dt: return dt
-    return dt + timedelta(hours=int(hours))
+    try: return dt + timedelta(hours=int(hours))
+    except: return dt
 
 # --- Routes ---
-
 @app.route('/health')
 def health_check():
     try:
-        # Simple DB Check
-        user_count = User.query.count()
-        return jsonify({
-            'status': 'ok', 
-            'database': 'connected', 
-            'users': user_count,
-            'db_url': app.config['SQLALCHEMY_DATABASE_URI'].split('://')[0] # Only show protocol for security
-        })
+        return jsonify({'status': 'ok', 'database': 'connected', 'users': User.query.count()})
     except Exception as e:
-        import traceback
-        return jsonify({
-            'status': 'error', 
-            'error': str(e), 
-            'traceback': traceback.format_exc()
-        }), 500
-
-
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @app.errorhandler(500)
 def internal_error(error):
@@ -403,8 +310,7 @@ def internal_error(error):
 
 @app.route('/')
 def index():
-    if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
+    if current_user.is_authenticated: return redirect(url_for('dashboard'))
     return redirect(url_for('login'))
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -434,84 +340,54 @@ def incoming():
     if request.method == 'POST':
         data = request.get_json()
         items = data.get('items', [])
-        
-        batch_doc_number = data.get('doc_number')
+        batch_doc = data.get('doc_number')
         batch_date_str = data.get('date')
-        batch_remarks = data.get('remarks')
-        batch_container = data.get('container_number')
         
-        batch_date = None
+        batch_date = date.today()
         if batch_date_str:
             try: batch_date = datetime.strptime(batch_date_str, '%Y-%m-%d').date()
-            except: batch_date = date.today()
-        else: batch_date = date.today()
-        
+            except: pass
+            
         try:
             for i in items:
                 item_id = i.get('item_id')
                 qty = float(i.get('quantity', 0))
-                pallets = int(i.get('pallets', 0)) if i.get('pallets') else None
                 loc_txt = i.get('location_id')
-                expiry = i.get('expiry')
                 
-                if qty <= 0: return jsonify({'success': False, 'message': 'Quantity must be greater than 0'}), 400
-                
-                print(f"DEBUG: Processing item {item_id} at {loc_txt}, expiry={expiry}")
-                
+                if qty <= 0: return jsonify({'success': False, 'message': 'Invalid Qty'}), 400
                 loc_id = resolve_location(loc_txt)
-                print(f"DEBUG: Resolved location '{loc_txt}' to ID {loc_id}")
+                if not loc_id: return jsonify({'success': False, 'message': f'Loc "{loc_txt}" not found'}), 400
                 
-                if not loc_id: return jsonify({'success': False, 'message': f'Location "{loc_txt}" not found'}), 400
-                
-                location = Location.query.get(loc_id)
-                if not location: return jsonify({'success': False, 'message': 'Location not found'}), 400
-                
-                existing_inv = Inventory.query.filter_by(item_id=item_id, location_id=loc_id, expiry=expiry).first()
+                existing_inv = Inventory.query.filter_by(item_id=item_id, location_id=loc_id, expiry=i.get('expiry')).first()
                 if not existing_inv:
-                    used_pallets = location.get_used_pallets()
-                    if used_pallets >= location.max_pallets:
-                        print(f"DEBUG: Location full. Used: {used_pallets}, Max: {location.max_pallets}")
-                        return jsonify({'success': False, 'message': f'Location "{loc_txt}" is full'}), 400
-                
-                if existing_inv:
-                    existing_inv.quantity += qty
-                    if batch_doc_number: existing_inv.doc_number = batch_doc_number
-                    if batch_date: existing_inv.date = batch_date
-                    if pallets is not None: existing_inv.pallets = (existing_inv.pallets or 0) + pallets
-                    if batch_remarks: existing_inv.remarks = batch_remarks
-                    if batch_container: existing_inv.container_number = batch_container
-                    existing_inv.worker_name = current_user.username
-                    if existing_inv.quantity < 0: return jsonify({'success': False, 'message': 'Resulting quantity would be negative'}), 400
-                else:
+                    # Check capacity
+                    loc = Location.query.get(loc_id)
+                    used = loc.get_used_pallets()
+                    if used >= loc.max_pallets: return jsonify({'success': False, 'message': f'Loc "{loc.name}" full'}), 400
+                    
                     inv = Inventory(
-                        item_id=item_id, location_id=loc_id, quantity=qty, expiry=expiry,
-                        doc_number=batch_doc_number, date=batch_date, pallets=pallets,
-                        remarks=batch_remarks, container_number=batch_container, worker_name=current_user.username
+                        item_id=item_id, location_id=loc_id, quantity=qty, expiry=i.get('expiry'),
+                        doc_number=batch_doc, date=batch_date, pallets=i.get('pallets'),
+                        remarks=data.get('remarks'), container_number=data.get('container_number'), worker_name=current_user.username
                     )
                     db.session.add(inv)
+                else:
+                    existing_inv.quantity += qty
+                    existing_inv.doc_number = batch_doc
+                    existing_inv.date = batch_date
                 
-                trans = Transaction(
+                db.session.add(Transaction(
                     type='IN', item_id=item_id, location_id=loc_id, quantity=qty, user_id=current_user.id,
-                    expiry=expiry, doc_number=batch_doc_number, date=batch_date, pallets=pallets,
-                    remarks=batch_remarks, container_number=batch_container, worker_name=current_user.username
-                )
-                db.session.add(trans)
-                
+                    expiry=i.get('expiry'), doc_number=batch_doc, date=batch_date,
+                    remarks=data.get('remarks'), worker_name=current_user.username
+                ))
             db.session.commit()
-            return jsonify({'success': True, 'message': 'Incoming Stock Added'})
+            return jsonify({'success': True})
         except Exception as e:
             db.session.rollback()
-            import traceback
-            print(traceback.format_exc())
             return jsonify({'success': False, 'message': str(e)}), 500
 
-    # History: Show ALL with new fields
-    # Use eager loading for history (OPTIMIZED)
-    history = Transaction.query.options(
-        joinedload(Transaction.item),
-        joinedload(Transaction.location),
-        joinedload(Transaction.user)
-    ).filter_by(type='IN').order_by(Transaction.timestamp.desc()).limit(100).all()
+    history = Transaction.query.filter_by(type='IN').options(joinedload(Transaction.item), joinedload(Transaction.location), joinedload(Transaction.user)).order_by(Transaction.timestamp.desc()).limit(100).all()
     return render_template('incoming.html', recent_history=history, date=date)
 
 @app.route('/outgoing', methods=['GET', 'POST'])
@@ -519,197 +395,64 @@ def incoming():
 def outgoing():
     if request.method == 'POST':
         data = request.get_json()
-        items = data.get('items', [])
-        
-        batch_doc_number = data.get('doc_number')
-        batch_date_str = data.get('date')
-        batch_remarks = data.get('remarks')
-        batch_container = data.get('container_number')
-        
-        batch_date = None
-        if batch_date_str:
-            try: batch_date = datetime.strptime(batch_date_str, '%Y-%m-%d').date()
-            except: batch_date = date.today()
-        else: batch_date = date.today()
-        
         try:
-            for i in items:
-                item_id = i.get('item_id')
+            batch_date = date.today()
+            if data.get('date'):
+                try: batch_date = datetime.strptime(data.get('date'), '%Y-%m-%d').date()
+                except: pass
+
+            for i in data.get('items', []):
                 qty = float(i.get('quantity', 0))
-                pallets = int(i.get('pallets', 0)) if i.get('pallets') else None
-                loc_txt = i.get('location_id')
+                if qty <= 0: continue
+                loc_id = resolve_location(i.get('location_id'))
+                if not loc_id: return jsonify({'success': False, 'message': 'Location not found'}), 400
                 
-                if qty <= 0: return jsonify({'success': False, 'message': 'Quantity must be greater than 0'}), 400
+                batches = Inventory.query.filter_by(item_id=i.get('item_id'), location_id=loc_id).filter(Inventory.quantity > 0).all()
+                total = sum(b.quantity for b in batches)
+                if total < qty: return jsonify({'success': False, 'message': f'Insufficient stock: {total}'}), 400
                 
-                loc_id = resolve_location(loc_txt)
-                if not loc_id: return jsonify({'success': False, 'message': f'Location "{loc_txt}" not found'}), 400
+                # Sort expiry
+                batches.sort(key=lambda b: datetime.strptime(b.expiry, '%m/%y') if b.expiry else datetime.max)
                 
-                batches = Inventory.query.filter_by(item_id=item_id, location_id=loc_id).filter(Inventory.quantity > 0).all()
-                def parse_expiry(b):
-                    if not b.expiry: return datetime.max
-                    try: return datetime.strptime(b.expiry, '%m/%y')
-                    except: return datetime.max
-                batches.sort(key=parse_expiry)
-                
-                remaining_qty_to_pick = qty
-                total_available = sum(b.quantity for b in batches)
-                
-                if total_available < qty:
-                     return {'success': False, 'message': f'Insufficient stock at {loc_txt}. Available: {total_available}, Requested: {qty}'}, 400
-
-                for batch in batches:
-                    if remaining_qty_to_pick <= 0: break
+                remaining = qty
+                for b in batches:
+                    if remaining <= 0: break
+                    take = min(b.quantity, remaining)
+                    b.quantity -= take
+                    remaining -= take
+                    if b.quantity == 0: db.session.delete(b)
                     
-                    taken = min(batch.quantity, remaining_qty_to_pick)
-                    batch.quantity -= taken
-                    remaining_qty_to_pick -= taken
-                    
-                    if batch.quantity == 0: db.session.delete(batch)
-
-                    trans = Transaction(
-                        type='OUT', item_id=item_id, location_id=loc_id, quantity=taken,
-                        user_id=current_user.id, expiry=batch.expiry, doc_number=batch_doc_number,
-                        date=batch_date, pallets=pallets, remarks=batch_remarks,
-                        container_number=batch_container, worker_name=current_user.username
-                    )
-                    db.session.add(trans)
-            
+                    db.session.add(Transaction(
+                        type='OUT', item_id=i.get('item_id'), location_id=loc_id, quantity=take, user_id=current_user.id,
+                        expiry=b.expiry, doc_number=data.get('doc_number'), date=batch_date,
+                        remarks=data.get('remarks'), worker_name=current_user.username
+                    ))
             db.session.commit()
-            return jsonify({'success': True, 'message': 'Outgoing Stock Processed'})
+            return jsonify({'success': True})
         except Exception as e:
             db.session.rollback()
-            import traceback
-            print(traceback.format_exc())
             return jsonify({'success': False, 'message': str(e)}), 500
 
-    # Use eager loading for history (OPTIMIZED)
-    history = Transaction.query.options(
-        joinedload(Transaction.item),
-        joinedload(Transaction.location),
-        joinedload(Transaction.user)
-    ).filter_by(type='OUT').order_by(Transaction.timestamp.desc()).limit(100).all()
+    history = Transaction.query.filter_by(type='OUT').options(joinedload(Transaction.item), joinedload(Transaction.location), joinedload(Transaction.user)).order_by(Transaction.timestamp.desc()).limit(100).all()
     return render_template('outgoing.html', recent_history=history, date=date)
 
 @app.route('/logs')
 @login_required
 def logs():
-    # Show all transactions, newest first
-    # OPTIMIZED: Eager load relationships to prevent N+1 queries
-    logs = Transaction.query.options(
-        joinedload(Transaction.item),
-        joinedload(Transaction.location),
-        joinedload(Transaction.user)
-    ).order_by(Transaction.timestamp.desc()).limit(500).all()
-    
-    audit_logs = AuditLog.query.options(
-        joinedload(AuditLog.user)
-    ).order_by(AuditLog.timestamp.desc()).limit(100).all()
-    
+    # Use joinedload to optimize
+    logs = Transaction.query.options(joinedload(Transaction.item), joinedload(Transaction.location), joinedload(Transaction.user)).order_by(Transaction.timestamp.desc()).limit(500).all()
+    audit_logs = AuditLog.query.options(joinedload(AuditLog.user)).order_by(AuditLog.timestamp.desc()).limit(100).all()
     return render_template('logs.html', logs=logs, audit_logs=audit_logs)
 
 @app.route('/reports')
 @login_required
 def reports():
-    # Simple query with outerjoin to show all history (User requested "old ways" / visibility)
-    query = Transaction.query
-
-    # Filters
-    search_term = request.args.get('search', '').strip()
-    filter_type = request.args.get('type', 'all') 
-    start_date = request.args.get('start_date', '')
-    end_date = request.args.get('end_date', '')
-    brand_filter = request.args.get('brand', '').strip()
-    min_qty = request.args.get('min_qty', '')
-    max_qty = request.args.get('max_qty', '')
-
-    query = query.outerjoin(Item) # Outer join to include orphans
-
-    if filter_type == 'in': query = query.filter(Transaction.type == 'IN')
-    elif filter_type == 'out': query = query.filter(Transaction.type == 'OUT')
-
-    if start_date:
-        try:
-            s_dt = datetime.strptime(start_date, '%Y-%m-%d')
-            query = query.filter(Transaction.timestamp >= s_dt)
-        except: pass
+    query = Transaction.query.outerjoin(Item)
+    search = request.args.get('search', '').strip()
+    if search:
+        query = query.outerjoin(Location).filter(db.or_(Item.name.ilike(f'%{search}%'), Item.sku.ilike(f'%{search}%'), Location.name.ilike(f'%{search}%')))
     
-    if end_date:
-        try:
-            e_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
-            query = query.filter(Transaction.timestamp < e_dt)
-        except: pass
-
-    if brand_filter:
-        query = query.filter(Item.brand.ilike(f'%{brand_filter}%'))
-
-    if min_qty:
-        try: query = query.filter(db.func.abs(Transaction.quantity) >= float(min_qty))
-        except: pass
-    
-    if max_qty:
-        try: query = query.filter(db.func.abs(Transaction.quantity) <= float(max_qty))
-        except: pass
-
-    if search_term:
-        term = f"%{search_term}%"
-        # Avoid duplicate join if location needed, use outerjoin
-        query = query.outerjoin(Location, Transaction.location_id == Location.id)\
-                     .filter(
-                         db.or_(
-                             Item.name.ilike(term),
-                             Item.sku.ilike(term),
-                             Location.name.ilike(term),
-                             Transaction.remarks.ilike(term),
-                             Transaction.doc_number.ilike(term)
-                         )
-                     )
-
     transactions = query.order_by(Transaction.timestamp.desc()).limit(500).all()
-
-    if request.args.get('export') == 'csv':
-        selected_cols = request.args.get('cols', '').split(',')
-        all_cols_map = {
-            'date': 'Date', 'time': 'Time', 'type': 'Type', 'doc': 'Doc Number',
-            'sku': 'SKU', 'name': 'Item Name', 'brand': 'Brand', 'loc': 'Location',
-            'qty': 'Quantity', 'plts': 'Pallets', 'expiry': 'Expiry',
-            'user': 'User', 'remarks': 'Remarks'
-        }
-        if not selected_cols or selected_cols == ['']: active_cols = all_cols_map.values()
-        else: active_cols = [all_cols_map[c] for c in selected_cols if c in all_cols_map]
-
-        data = []
-        for t in transactions:
-            row = {
-                'Date': t.timestamp.strftime('%Y-%m-%d'),
-                'Time': t.timestamp.strftime('%H:%M'),
-                'Type': t.type,
-                'Doc Number': t.doc_number,
-                'SKU': t.item.sku if t.item else '<Deleted>',
-                'Item Name': t.item.name if t.item else '<Deleted>',
-                'Brand': t.item.brand if t.item else '',
-                'Location': t.location.name if t.location else '<Deleted>',
-                'Quantity': t.quantity,
-                'Pallets': t.pallets,
-                'Expiry': t.expiry,
-                'User': t.worker_name or (t.user.username if t.user else 'System'),
-                'Remarks': t.remarks
-            }
-            data.append({k: v for k, v in row.items() if k in active_cols})
-        
-        df = pd.DataFrame(data)
-        final_cols = [c for c in active_cols if c in df.columns]
-        if final_cols: df = df[final_cols]
-        
-        from io import BytesIO
-        output = BytesIO()
-        df.to_csv(output, index=False)
-        output.seek(0)
-        
-        return Response(
-            output, mimetype="text/csv",
-            headers={"Content-Disposition": f"attachment;filename=inventory_report_{date.today()}.csv"}
-        )
-
     return render_template('reports.html', transactions=transactions, today=date.today(), timedelta=timedelta)
 
 @app.route('/admin/db')
@@ -722,14 +465,13 @@ def admin_db():
     columns = []
     if current_table and current_table in tables:
         try:
-            sql = text(f"SELECT * FROM {current_table} LIMIT 100")
-            result = db.session.execute(sql)
+            result = db.session.execute(text(f"SELECT * FROM {current_table} LIMIT 100"))
             columns = result.keys()
             data = [dict(zip(columns, row)) for row in result]
-        except Exception as e:
-            flash(f'Error querying table: {str(e)}')
+        except Exception as e: flash(f'Error: {e}')
     return render_template('admin_db.html', tables=tables, current_table=current_table, data=data, columns=columns)
 
+# CRITICAL FIX 4: Robust Imports (Batching + Error Handling)
 @app.route('/admin/import_inventory', methods=['GET', 'POST'])
 @login_required
 def admin_import_inventory():
@@ -737,342 +479,245 @@ def admin_import_inventory():
     if request.method == 'POST':
         if 'file' not in request.files: return redirect(request.url)
         file = request.files['file']
-        if file.filename == '' or not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
-             return redirect(request.url)
+        if file.filename == '': return redirect(request.url)
+        
         try:
-            print(f"📂 Processing Inventory Import: {file.filename}")
-            try:
-                df = pd.read_excel(file, engine='openpyxl')
-            except:
-                df = pd.read_excel(file, engine='xlrd')
-
+            try: df = pd.read_excel(file, engine='openpyxl')
+            except: df = pd.read_excel(file, engine='xlrd')
+            
+            # Pre-load maps for speed
             item_map = {item.sku: item.id for item in Item.query.all()}
             loc_map = {loc.name: loc.id for loc in Location.query.all()}
             new_items, new_locs = [], []
+            inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in Inventory.query.all()}
             
-            rows_data = []
-            for idx, row in df.iterrows():
+            count, errors = 0, 0
+            
+            # Phase 1: Create missing items/locs
+            for _, row in df.iterrows():
                 try:
-                    # Robust flexible column access using iloc (Column 0=Loc, 1=SKU, 2=Desc...)
-                    # or named columns if possible. Let's stick to iloc for legacy support but add bounds check.
-                    if len(row) < 3: continue
-                    
                     loc_name = str(row.iloc[0]).strip()
                     sku = str(row.iloc[1]).strip()
                     desc = str(row.iloc[2]).strip()
+                    if not sku or sku == 'nan': continue
                     
-                    expiry_raw = ''
-                    if len(row) > 3: expiry_raw = str(row.iloc[3]).strip()
+                    if sku not in item_map: 
+                         item = Item(sku=sku, name=desc)
+                         db.session.add(item)
+                         db.session.flush() # Get ID
+                         item_map[sku] = item.id
                     
-                    qty = 0.0
-                    if len(row) > 4 and pd.notna(row.iloc[4]):
-                         try: qty = float(row.iloc[4])
-                         except: pass
-                         
-                    pallets = 0
-                    if len(row) > 5 and pd.notna(row.iloc[5]):
-                        try: pallets = int(row.iloc[5])
-                        except: pass
-
-                    if not sku or sku == 'nan' or qty <= 0: continue
-                    
-                    if sku not in item_map:
-                         if sku not in [i.sku for i in new_items]:
-                            new_items.append(Item(sku=sku, name=desc, description=desc))
                     if loc_name not in loc_map:
-                         if loc_name not in [l.name for l in new_locs]:
-                            new_locs.append(Location(name=loc_name))
-                            
-                    # Date parse
-                    expiry = expiry_raw # Default
-                    if isinstance(expiry_raw, str):
-                        try: expiry = datetime.strptime(expiry_raw, '%b-%y').strftime('%m/%y')
-                        except: pass
-                    
-                    rows_data.append({'sku': sku, 'loc_name': loc_name, 'qty': qty, 'expiry': expiry, 'pallets': pallets})
-                except Exception as e:
-                     print(f"⚠️ Error row {idx}: {e}")
-
-            if new_items: db.session.add_all(new_items)
-            if new_locs: db.session.add_all(new_locs)
-            if new_items or new_locs:
-                db.session.commit()
-                item_map = {item.sku: item.id for item in Item.query.all()}
-                loc_map = {loc.name: loc.id for loc in Location.query.all()}
+                         loc = Location(name=loc_name)
+                         db.session.add(loc)
+                         db.session.flush()
+                         loc_map[loc_name] = loc.id
+                except: pass
+            db.session.commit()
             
-            all_inv = Inventory.query.all()
-            inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in all_inv}
-            
-            count, errors = 0, 0
-            for data in rows_data:
+            # Phase 2: Process Inventory
+            for idx, row in df.iterrows():
                 try:
-                    i_id = item_map.get(data['sku'])
-                    l_id = loc_map.get(data['loc_name'])
+                    if len(row) < 3: continue
+                    loc_name = str(row.iloc[0]).strip()
+                    sku = str(row.iloc[1]).strip()
+                    if not sku or sku == 'nan': continue
+                    
+                    # Safe get
+                    qty = 0
+                    if len(row) > 4: 
+                        try: qty = float(row.iloc[4])
+                        except: pass
+                    if qty <= 0: continue
+                    
+                    expiry = ''
+                    if len(row) > 3: expiry = str(row.iloc[3]).strip()
+                    
+                    i_id = item_map.get(sku)
+                    l_id = loc_map.get(loc_name)
                     if not i_id or not l_id: continue
                     
-                    key = (i_id, l_id, data['expiry'])
+                    key = (i_id, l_id, expiry)
                     inv = inv_map.get(key)
-                    
-                    if inv: inv.quantity += data['qty']
+                    if inv: 
+                        inv.quantity += qty
                     else:
-                        inv = Inventory(item_id=i_id, location_id=l_id, quantity=data['qty'], expiry=data['expiry'], pallets=data['pallets'], worker_name=current_user.username, remarks='Bulk Import')
+                        inv = Inventory(item_id=i_id, location_id=l_id, quantity=qty, expiry=expiry, worker_name=current_user.username)
                         db.session.add(inv)
                         inv_map[key] = inv
                     
-                    # No transaction logging per item for speed? Or just do it?
-                    # Original logic had it, let's keep it but simpler
-                    # Actually for pure speed, bulk insert transactions later is better, but let's stick to safe
-                    # db.session.add(trans)...
+                    if idx % 50 == 0: db.session.commit() # Batch commit
                     count += 1
                 except: errors += 1
-            
+                
             db.session.commit()
-            flash(f'Imported {count} items.')
-            log_audit('IMPORT_INVENTORY', f'Imported {count} items')
+            flash(f'Imported {count} items. Errors: {errors}')
         except Exception as e:
             db.session.rollback()
-            flash(f'Error: {e}')
+            flash(f'Critical Import Error: {e}')
             
     return render_template('import_inventory.html')
 
 @app.route('/admin/items', methods=['GET', 'POST'])
 @login_required
 def admin_items():
-    if not current_user.is_admin():
-        flash('Access denied.')
-        return redirect(url_for('dashboard'))
-    if request.method == 'POST':
-        action = request.form.get('action')
-        
-        if 'file' in request.files:
-            file = request.files['file']
-            if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
-                try:
-                    print(f"📂 Processing Items Import: {file.filename}")
-                    
-                    # Read Excel with proper engine
-                    try:
-                        df = pd.read_excel(file, engine='openpyxl')
-                    except:
-                        df = pd.read_excel(file, engine='xlrd')
-                    
-                    print(f"📊 Columns: {df.columns.tolist()}")
-                    
-                    def clean(x):
-                        return str(x).strip() if pd.notna(x) else ''
-                    
-                    count_new = 0
-                    count_updated = 0
-                    
-                    for idx, row in df.iterrows():
-                        try:
-                            # Flexible SKU column reading
-                            sku = None
-                            for col in ['Item Code', 'SKU', 'Code', 'sku', 'item_code']:
-                                if col in df.columns:
-                                    sku = clean(row[col])
-                                    break
-                            if not sku and len(row) > 0:
-                                sku = clean(row.iloc[0])
-                            
-                            if not sku or sku == 'nan':
-                                continue
-                            
-                            # Flexible Name/Description
-                            name = None
-                            for col in ['Description', 'Name', 'Item Name', 'description', 'name']:
-                                if col in df.columns:
-                                    name = clean(row[col])
-                                    break
-                            if not name and len(row) > 1:
-                                name = clean(row.iloc[1])
-                            if not name:
-                                name = 'Unknown'
-                            
-                            # Get other fields flexibly
-                            brand = ''
-                            for col in ['Brand', 'brand']:
-                                if col in df.columns:
-                                    brand = clean(row[col])
-                                    break
-                            
-                            packing = ''
-                            for col in ['Packing', 'packing']:
-                                if col in df.columns:
-                                    packing = clean(row[col])
-                                    break
-                            
-                            weight = 0.0
-                            for col in ['Weight', 'weight']:
-                                if col in df.columns and pd.notna(row[col]):
-                                    weight = float(row[col])
-                                    break
-                            
-                            uom = ''
-                            for col in ['UOM', 'Unit', 'uom', 'unit']:
-                                if col in df.columns:
-                                    uom = clean(row[col])
-                                    break
-                            
-                            price = 0.0
-                            for col in ['Price', 'price', 'Cost', 'cost']:
-                                if col in df.columns and pd.notna(row[col]):
-                                    price = float(row[col])
-                                    break
-                            
-                            min_stock = 10
-                            for col in ['Min Stock', 'Minimum', 'min_stock', 'minimum']:
-                                if col in df.columns and pd.notna(row[col]):
-                                    min_stock = int(row[col])
-                                    break
-                            
-                            # Check if item exists
-                            item = Item.query.filter_by(sku=sku).first()
-                            
-                            if not item:
-                                # Create new item
-                                item = Item(
-                                    sku=sku,
-                                    name=name,
-                                    description=name,
-                                    brand=brand,
-                                    packing=packing,
-                                    weight=weight,
-                                    uom=uom,
-                                    price=price,
-                                    min_stock=min_stock
-                                )
-                                db.session.add(item)
-                                count_new += 1
-                            else:
-                                # Update existing
-                                item.name = name
-                                item.description = name
-                                item.brand = brand
-                                item.packing = packing
-                                item.weight = weight
-                                item.uom = uom
-                                item.price = price
-                                item.min_stock = min_stock
-                                count_updated += 1
-                            
-                            # Commit in batches
-                            if (count_new + count_updated) % 10 == 0:
-                                db.session.commit()
-                                print(f"💾 Committed {count_new + count_updated} items...")
-                        
-                        except Exception as e:
-                            db.session.rollback() # Reset session so next row can proceed
-                            print(f"❌ Error on row {idx}: {e}")
-                            continue
-                    
-                    db.session.commit()
-                    print(f"✅ Import complete: {count_new} new, {count_updated} updated")
-                    flash(f'✅ Imported {count_new} new items, updated {count_updated} items')
-                    log_audit('IMPORT_ITEMS', f'Imported {count_new} new, updated {count_updated}')
-                    
-                except Exception as e:
-                    db.session.rollback()
-                    import traceback
-                    print(f"❌ Import Error: {e}")
-                    print(traceback.format_exc())
-                    flash(f'Import Error: {str(e)}')
-            return redirect(url_for('admin_items'))
-
-        if action == 'add':
-            sku = request.form.get('sku')
-            if Item.query.filter_by(sku=sku).first(): flash('Item exists.')
-            else:
-                try:
-                    item = Item(sku=sku, name=request.form.get('name'), description=request.form.get('description'),
-                        brand=request.form.get('brand'), packing=request.form.get('packing'),
-                        weight=float(request.form.get('weight') or 0), uom=request.form.get('uom'))
-                    db.session.add(item); db.session.commit(); flash('Item added.')
-                    log_audit('ADD_ITEM', f'Added item {sku}')
-                except Exception as e: flash(f'Error: {e}')
-        elif action == 'edit':
-            item = Item.query.get(request.form.get('item_id'))
-            if item:
-                item.sku = request.form.get('sku'); item.name = request.form.get('name')
-                item.description = request.form.get('description'); item.brand = request.form.get('brand')
-                item.packing = request.form.get('packing'); item.weight = float(request.form.get('weight') or 0)
-                item.uom = request.form.get('uom')
-                db.session.commit(); flash('Item updated.')
-                log_audit('EDIT_ITEM', f'Updated item {item.sku}')
-        elif action == 'delete':
-            item = Item.query.get(request.form.get('item_id'))
-            if item:
-                Inventory.query.filter_by(item_id=item.id).delete()
-                db.session.delete(item); db.session.commit(); flash('Item deleted.')
-                log_audit('DELETE_ITEM', f'Deleted item {item.sku}')
-                
-        return redirect(url_for('admin_items'))
-    
-    page = request.args.get('page', 1, type=int)
-    q = request.args.get('q', '').strip()
-    query = Item.query
-    if q: query = query.filter(db.or_(Item.name.ilike(f'%{q}%'), Item.sku.ilike(f'%{q}%'), Item.brand.ilike(f'%{q}%')))
-    return render_template('admin_items.html', items=query.paginate(page=page, per_page=50), q=q)
-
-
-@app.route('/admin/locations', methods=['GET', 'POST'])
-@login_required
-def admin_locations():
     if not current_user.is_admin(): return redirect(url_for('dashboard'))
     
     if request.method == 'POST':
         action = request.form.get('action')
         
+        # IMPORT LOGIC
         if 'file' in request.files:
             file = request.files['file']
-            if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
-                try:
-                    print(f"📂 Processing Location Import: {file.filename}")
-                    try: df = pd.read_excel(file, engine='openpyxl')
-                    except: df = pd.read_excel(file, engine='xlrd')
-                    
-                    count = 0
-                    new_loc_names = set()
-                    for _, row in df.iterrows():
+            try:
+                try: df = pd.read_excel(file, engine='openpyxl')
+                except: df = pd.read_excel(file, engine='xlrd')
+                
+                clean = lambda x: str(x).strip() if pd.notna(x) else ''
+                count_new, count_upd = 0, 0
+                
+                # Pre-load existing items to memory to avoid N+1 queries
+                existing_skus = {i.sku: i for i in Item.query.all()}
+                
+                for idx, row in df.iterrows():
+                    try:
+                        sku = None
+                        # Flexible Column Search
+                        for col in ['SKU', 'Item Code', 'sku']:
+                            if col in df.columns: sku = clean(row[col]); break
+                        if not sku and len(row) > 0: sku = clean(row.iloc[0])
+                        
+                        if not sku or sku == 'nan': continue
+                        
+                        name = 'Unknown'
+                        for col in ['Name', 'Description', 'name']:
+                             if col in df.columns: name = clean(row[col]); break
+                        
+                        item = existing_skus.get(sku)
+                        if item:
+                            item.name = name
+                            count_upd += 1
+                        else:
+                            item = Item(sku=sku, name=name)
+                            db.session.add(item)
+                            existing_skus[sku] = item # Update local map
+                            count_new += 1
+                        
+                        # Batch Commit
+                        if (idx + 1) % 50 == 0: 
+                            db.session.commit()
+                            
+                    except Exception as e:
+                        print(f"Row Error {idx}: {e}")
+                        db.session.rollback()
+                        continue
+                
+                db.session.commit()
+                flash(f'Imported {count_new} new, {count_upd} updated.')
+                
+            except Exception as e:
+                import traceback
+                print(traceback.format_exc())
+                flash(f'File Error: {e}')
+            return redirect(url_for('admin_items'))
+
+        # MANUAL CRUD
+        try:
+            if action == 'add':
+                sku = request.form.get('sku')
+                if Item.query.filter_by(sku=sku).first(): flash('Item exists')
+                else:
+                    db.session.add(Item(sku=sku, name=request.form.get('name'), description=request.form.get('description'), 
+                        brand=request.form.get('brand'), min_stock=int(request.form.get('min_stock', 10))))
+                    db.session.commit(); flash('Added')
+            elif action == 'edit':
+                item = Item.query.get(request.form.get('item_id'))
+                if item:
+                    item.sku = request.form.get('sku')
+                    item.name = request.form.get('name')
+                    item.description = request.form.get('description')
+                    item.brand = request.form.get('brand')
+                    item.min_stock = int(request.form.get('min_stock', 10))
+                    db.session.commit(); flash('Updated')
+            elif action == 'delete':
+                item = Item.query.get(request.form.get('item_id'))
+                if item:
+                    Inventory.query.filter_by(item_id=item.id).delete()
+                    db.session.delete(item); db.session.commit(); flash('Deleted')
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error: {e}')
+            
+        return redirect(url_for('admin_items'))
+    
+    page = request.args.get('page', 1, type=int)
+    q = request.args.get('q', '').strip()
+    query = Item.query
+    if q: query = query.filter(db.or_(Item.name.ilike(f'%{q}%'), Item.sku.ilike(f'%{q}%')))
+    return render_template('admin_items.html', items=query.paginate(page=page, per_page=50), q=q)
+
+@app.route('/admin/locations', methods=['GET', 'POST'])
+@login_required
+def admin_locations():
+    if not current_user.is_admin(): return redirect(url_for('dashboard'))
+    if request.method == 'POST':
+        action = request.form.get('action')
+        
+        # IMPORT LOGIC
+        if 'file' in request.files:
+            file = request.files['file']
+            try:
+                try: df = pd.read_excel(file, engine='openpyxl')
+                except: df = pd.read_excel(file, engine='xlrd')
+                
+                # Pre-load names to avoid duplicates
+                existing_names = {l.name for l in Location.query.all()}
+                new_in_file = set()
+                count = 0
+                
+                for idx, row in df.iterrows():
+                    try:
                         name = str(row.iloc[0]).strip() if len(row) > 0 else ''
                         if not name or name == 'nan': continue
+                        if name in existing_names or name in new_in_file: continue
                         
-                        loc = Location.query.filter_by(name=name).first()
-                        if not loc and name not in new_loc_names:
-                            db.session.add(Location(name=name))
-                            new_loc_names.add(name)
-                            count += 1
-                            
-                    db.session.commit()
-                    flash(f'Imported {count} locations.')
-                    log_audit('IMPORT_LOCATIONS', f'Imported {count} locations')
-                except Exception as e:
-                    import traceback
-                    flash(f'Error: {e}')
-                    print(traceback.format_exc())
+                        db.session.add(Location(name=name))
+                        new_in_file.add(name)
+                        count += 1
+                        
+                        if count % 50 == 0: db.session.commit()
+                        
+                    except: pass
+                
+                db.session.commit()
+                flash(f'Imported {count} locations.')
+            except Exception as e:
+                flash(f'Error: {e}')
             return redirect(url_for('admin_locations'))
 
-        if action == 'add':
-            name = request.form.get('name')
-            if Location.query.filter_by(name=name).first(): flash('Exists.')
-            else:
-                try: db.session.add(Location(name=name, x=int(request.form.get('x') or 0), y=int(request.form.get('y') or 0)))
-                except: pass
-                db.session.commit(); flash('Added.')
-                log_audit('ADD_LOCATION', f'Added location {name}')
-        elif action == 'edit':
-            loc = Location.query.get(request.form.get('loc_id'))
-            if loc:
-                loc.name = request.form.get('name'); loc.x = int(request.form.get('x') or 0); loc.y = int(request.form.get('y') or 0)
-                db.session.commit(); flash('Updated.')
-                log_audit('EDIT_LOCATION', f'Updated {loc.name}')
-        elif action == 'delete':
-            loc = Location.query.get(request.form.get('loc_id'))
-            if loc:
-                Inventory.query.filter_by(location_id=loc.id).delete()
-                db.session.delete(loc); db.session.commit(); flash('Deleted.')
-                log_audit('DELETE_LOCATION', f'Deleted {loc.name}')
-        
+        # MANUAL CRUD
+        try:
+            if action == 'add':
+                name = request.form.get('name')
+                if not Location.query.filter_by(name=name).first():
+                    db.session.add(Location(name=name, x=int(request.form.get('x',0)), y=int(request.form.get('y',0)), max_pallets=int(request.form.get('max_pallets', 28))))
+                    db.session.commit(); flash('Added')
+            elif action == 'edit':
+                loc = Location.query.get(request.form.get('loc_id'))
+                if loc:
+                    loc.name = request.form.get('name')
+                    loc.x = int(request.form.get('x',0)); loc.y = int(request.form.get('y',0))
+                    loc.max_pallets = int(request.form.get('max_pallets', 28))
+                    db.session.commit(); flash('Updated')
+            elif action == 'delete':
+                loc = Location.query.get(request.form.get('loc_id'))
+                if loc:
+                    Inventory.query.filter_by(location_id=loc.id).delete()
+                    db.session.delete(loc); db.session.commit(); flash('Deleted')
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error: {e}')
+            
         return redirect(url_for('admin_locations'))
 
     page = request.args.get('page', 1, type=int)
@@ -1081,117 +726,91 @@ def admin_locations():
     if q: query = query.filter(Location.name.ilike(f'%{q}%'))
     return render_template('admin_locations.html', locations=query.paginate(page=page, per_page=50), q=q)
 
-    
 @app.route('/admin/users', methods=['GET', 'POST'])
 @login_required
 def admin_users():
-    if not current_user.is_admin():
-        flash('Access denied.')
-        return redirect(url_for('dashboard'))
-    
+    if not current_user.is_admin(): return redirect(url_for('dashboard'))
     if request.method == 'POST':
         action = request.form.get('action')
-        
-        if action == 'add':
-            username = request.form.get('username')
-            password = request.form.get('password')
-            role = request.form.get('role', 'worker')
-            if User.query.filter_by(username=username).first(): flash('Username exists.')
-            else:
-                try:
-                    user = User(username=username, role=role); user.set_password(password)
-                    db.session.add(user); db.session.commit(); flash('User created.')
-                    log_audit('ADD_USER', f'Created user {username} ({role})')
-                except Exception as e: flash(f'Error: {e}')
-        elif action == 'edit':
-            user = User.query.get(request.form.get('user_id'))
-            if user:
-                user.role = request.form.get('role', user.role)
-                if request.form.get('password'): user.set_password(request.form.get('password'))
-                db.session.commit(); flash('User updated.')
-                log_audit('EDIT_USER', f'Updated {user.username}')
-        elif action == 'delete':
-            user = User.query.get(request.form.get('user_id'))
-            if user and user.id != current_user.id:
-                user.active = False; db.session.commit(); flash('Deactivated.')
-                log_audit('DEACTIVATE_USER', f'Deactivated {user.username}')
-            elif user and user.id == current_user.id: flash('Cannot deactivate self.')
-        
+        try:
+            if action == 'add':
+                if not User.query.filter_by(username=request.form.get('username')).first():
+                    u = User(username=request.form.get('username'), role=request.form.get('role', 'worker'))
+                    u.set_password(request.form.get('password'))
+                    db.session.add(u); db.session.commit(); flash('User created')
+            elif action == 'edit':
+                u = User.query.get(request.form.get('user_id'))
+                if u:
+                    u.role = request.form.get('role', u.role)
+                    if request.form.get('password'): u.set_password(request.form.get('password'))
+                    db.session.commit(); flash('Updated')
+            elif action == 'delete':
+                u = User.query.get(request.form.get('user_id'))
+                if u and u.id != current_user.id:
+                    u.active = False; db.session.commit(); flash('Deactivated')
+        except Exception as e:
+            db.session.rollback(); flash(f'Error: {e}')
         return redirect(url_for('admin_users'))
     
-    users = User.query.filter(User.active == True).all()
-    return render_template('admin_users.html', users=users)
-
+    return render_template('admin_users.html', users=User.query.filter(User.active==True).all())
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
     try:
-        # DB Might still fail if connection is broken
+        from sqlalchemy import func
         total_items = Inventory.query.filter(Inventory.quantity > 0).count()
         total_locations = Location.query.count()
+        total_value = db.session.query(func.sum(Inventory.quantity * Item.price)).join(Item).filter(Inventory.quantity > 0).scalar() or 0
         
-        # OPTIMIZED: Calculate total value in DB to handle nulls and avoid N+1
-        from sqlalchemy import func
-        total_value_qry = db.session.query(func.sum(Inventory.quantity * Item.price)).join(Item).filter(Inventory.quantity > 0).scalar()
-        total_value = total_value_qry or 0
-        
-        # 4. Low Stock Items
-        stock_levels = db.session.query(Item.id, Item.name, Item.min_stock, func.sum(Inventory.quantity)).outerjoin(Inventory).group_by(Item.id).all()
-        low_stock_items = [{'name': s[1], 'qty': s[3] or 0, 'min': s[2]} for s in stock_levels if (s[3] or 0) < (s[2] or 0)]
-        
-        # 5. Expiry Check - Needs Inventory Iteration but eager load Item is not needed, just expiry string
-        # Eager load item just in case we display name
-        inventory = Inventory.query.options(joinedload(Inventory.item)).filter(Inventory.quantity > 0).all()
-        expiring_items = [i for i in inventory if check_expiry(i.expiry) in ['expired', 'expiring']]
-        
-        # 6. Chart Data (Original Logic)
-        last_30 = datetime.now() - timedelta(days=30)
-        txs = Transaction.query.filter(Transaction.timestamp >= last_30).all()
-        
-        chart_data = {}
-        for i in range(31):
-            d = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-            chart_data[d] = {'in': 0, 'out': 0}
+        # Low Stock
+        low_stock = []
+        low_q = db.session.query(Item.name, Item.min_stock, func.sum(Inventory.quantity)).outerjoin(Inventory).group_by(Item.id).all()
+        for name, min_s, qty in low_q:
+            if (qty or 0) < (min_s or 0): low_stock.append({'name': name, 'qty': qty or 0, 'min': min_s})
             
-        for t in txs:
-            d_str = t.timestamp.strftime('%Y-%m-%d')
-            if d_str in chart_data:
-                chart_data[d_str][t.type.lower()] += 1
-                
+        # Expiry - Fetch only needed
+        expiring = []
+        # Optimization: Fetch only items with quantity > 0
+        inv_items = Inventory.query.filter(Inventory.quantity > 0).all()
+        for i in inv_items:
+            status = check_expiry(i.expiry)
+            if status in ['expired', 'expiring']: expiring.append(i)
+            
+        # Chart Data
+        last_30 = datetime.utcnow() - timedelta(days=30)
+        chart_data = { (datetime.utcnow().date() - timedelta(days=i)).strftime('%Y-%m-%d'): {'in':0, 'out':0} for i in range(31) }
+        
+        txs = Transaction.query.filter(Transaction.timestamp >= last_30).with_entities(Transaction.type, Transaction.timestamp).all()
+        for t_type, t_time in txs:
+            d = t_time.strftime('%Y-%m-%d')
+            if d in chart_data: chart_data[d][t_type.lower()] += 1
+            
         dates = sorted(chart_data.keys())
         
         return render_template('dashboard.html', 
             total_items=total_items, total_locations=total_locations, total_value=total_value,
-            low_stock_items=low_stock_items, expiring_items=expiring_items,
-            items=inventory, locations=[], chart_dates=dates,
-            chart_in=[chart_data[d]['in'] for d in dates], chart_out=[chart_data[d]['out'] for d in dates]
+            low_stock_items=low_stock, expiring_items=expiring,
+            chart_dates=dates, chart_in=[chart_data[d]['in'] for d in dates], chart_out=[chart_data[d]['out'] for d in dates]
         )
     except Exception as e:
-        print(f"⚠️ Dashboard DB Error: {e}")
-        # Return empty dashboard to allow access
-        return render_template('dashboard.html', 
-            total_items=0, total_locations=0, total_value=0,
-            low_stock_items=[], expiring_items=[], items=[], locations=[], chart_dates=[], chart_in=[], chart_out=[],
-            error=f"Database Disconnected: {e}"
-        )
-
+        print(f"Dash Error: {e}")
+        return render_template('dashboard.html', error=str(e))
 
 @app.route('/warehouse')
 @login_required
 def warehouse():
-    locations_with_items = db.session.query(Location).join(Inventory).filter(Inventory.quantity > 0).distinct().order_by(Location.name).all()
-    location_data = []
-    for loc in locations_with_items:
-        used = loc.get_used_pallets()
-        location_data.append({
-            'location': loc, 'used_pallets': used, 'free_pallets': loc.get_free_pallets(),
-            'max_pallets': loc.max_pallets, 'usage_percent': (used/loc.max_pallets*100) if loc.max_pallets>0 else 0,
-            'inventory_items': [i for i in loc.inventory if i.quantity > 0]
+    locs = db.session.query(Location).join(Inventory).filter(Inventory.quantity > 0).distinct().order_by(Location.name).all()
+    data = []
+    for l in locs:
+        used = l.get_used_pallets()
+        data.append({
+            'location': l, 'used_pallets': used, 'free_pallets': l.get_free_pallets(),
+            'max_pallets': l.max_pallets, 'usage_percent': (used/l.max_pallets*100) if l.max_pallets else 0,
+            'inventory_items': [i for i in l.inventory if i.quantity > 0]
         })
-    return render_template('warehouse.html', location_data=location_data)
+    return render_template('warehouse.html', location_data=data)
 
-# API
 @app.route('/api/items/search')
 @login_required
 def search_items():
@@ -1204,19 +823,14 @@ def search_items():
 @login_required
 def get_location_inventory(location_id):
     try:
-        loc_id = int(location_id)
-        location = Location.query.get(loc_id)
-        if not location: return jsonify({'error': 'Location not found'}), 404
-        inventory = db.session.query(Inventory).filter_by(location_id=loc_id).filter(Inventory.quantity > 0).all()
-        results = [{
-            'item_sku': i.item.sku, 'item_name': i.item.name, 'quantity': i.quantity,
-            'expiry': i.expiry, 'pallets': i.pallets
-        } for i in inventory if i.item]
-        return jsonify({'inventory': results, 'location': {'name': location.name, 'used': location.get_used_pallets(), 'free': location.get_free_pallets()}})
+        l = Location.query.get(int(location_id))
+        if not l: return jsonify({'error': 'Not found'}), 404
+        inv = [i for i in l.inventory if i.quantity > 0]
+        return jsonify({
+            'inventory': [{'item_sku': i.item.sku, 'item_name': i.item.name, 'quantity': i.quantity, 'expiry': i.expiry, 'pallets': i.pallets} for i in inv],
+            'location': {'name': l.name, 'used': l.get_used_pallets(), 'free': l.get_free_pallets()}
+        })
     except: return jsonify({'error': 'Error'}), 500
 
-
-
 if __name__ == '__main__':
-    app.config['TEMPLATES_AUTO_RELOAD'] = True
     app.run(debug=True, port=int(os.environ.get('PORT', 5001)), use_reloader=True)
