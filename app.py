@@ -741,22 +741,27 @@ def admin_fix_reports():
         count = 0
         inventory = Inventory.query.filter(Inventory.quantity > 0).all()
         for inv in inventory:
-            exists = Transaction.query.filter_by(item_id=inv.item_id, location_id=inv.location_id).first()
-            if not exists:
+            # Calculate total logged quantity (IN - OUT)
+            txns = Transaction.query.filter_by(item_id=inv.item_id, location_id=inv.location_id).all()
+            logged_qty = sum([t.quantity if t.type == 'IN' else -t.quantity for t in txns])
+            
+            # If Inventory is significantly higher than Logged, backfill the difference
+            diff = inv.quantity - logged_qty
+            if diff > 0.001:
                 db.session.add(Transaction(
                     type='IN',
                     item_id=inv.item_id,
                     location_id=inv.location_id,
-                    quantity=inv.quantity,
+                    quantity=diff,
                     user_id=current_user.id,
                     timestamp=datetime.utcnow(),
                     expiry=inv.expiry,
                     worker_name='System',
-                    remarks="Opening Balance (Restored)"
+                    remarks="System Correction (Backfill)"
                 ))
                 count += 1
         db.session.commit()
-        return f"Fixed! Restored {count} missing transaction records. <a href='/reports'>Go to Reports</a>"
+        return f"Fixed! Created {count} adjustment records. Reports should now match Inventory. <a href='/reports'>Go to Reports</a>"
     except Exception:
         db.session.rollback()
         return f"<pre>{traceback.format_exc()}</pre>"
