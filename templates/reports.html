@@ -56,6 +56,8 @@
     <button onclick="window.print()" class="btn btn-secondary">🖨️ Print / PDF</button>
     <button onclick="exportCSV()" class="btn btn-success"
       style="background: var(--success); color: white; border: none;">💾 Export CSV</button>
+    <a href="{{ url_for('admin_fix_reports') }}" class="btn btn-warning"
+      style="background: var(--warning); color: #000;">🔧 Repair Data</a>
     <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Dashboard</a>
   </div>
 </div>
