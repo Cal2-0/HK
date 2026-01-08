@@ -184,10 +184,20 @@ class Transaction(db.Model):
     )
 
 # --- Schema Migration Helper ---
-def init_db():
+def create_tables():
+    """Fast initialization: Just ensure tables exist (Fast)"""
     with app.app_context():
         try:
-            print("🔄 Initializing Database...")
+            db.create_all()
+            print("✅ Database Tables Verified")
+        except Exception as e:
+            print(f"❌ Table Verification Failed: {e}")
+
+def run_migrations():
+    """Slow initialization: Check columns and migrate schema (Slow)"""
+    with app.app_context():
+        try:
+            print("🔄 Checking Schema & Running Migrations...")
             db.create_all() 
             
             # Check for migrations/schema updates
@@ -277,17 +287,16 @@ def init_db():
                         print(f"⚠️ Error creating default admin: {e}")
 
             db.session.commit()
-            print("✅ Database Initialized Successfully")
+            print("✅ Database Migrated Successfully")
         except Exception as e:
-            print(f"❌ Database Initialization Failed: {e}")
-            # Don't exit, let app try to run so /health can report error
+            print(f"❌ Database Migration Failed: {e}")
 
 # Manual Init Route (Fix for missing tables)
 @app.route('/init-db')
 def manual_init():
     try:
-        init_db()
-        return jsonify({"status": "success", "message": "Database initialized & Tables created."})
+        run_migrations()
+        return jsonify({"status": "success", "message": "Database initialized & Tables migrated."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -315,7 +324,7 @@ with app.app_context():
 def initialize_database_on_first_request():
     if not app.config.get('DB_INITIALIZED'):
         app.config['DB_INITIALIZED'] = True
-        try: init_db()
+        try: create_tables()
         except Exception as e:
             print(f"❌ Critical Init Error: {e}")
             # Don't pass, let it print
@@ -339,6 +348,7 @@ def resolve_location(loc_input):
                 return l.id
     return None
 
+@app.template_filter('check_expiry')
 def check_expiry(expiry_str):
     if not expiry_str: return ''
     try:
