@@ -554,8 +554,6 @@ def admin_import_inventory():
                             except:
                                 expiry = str(val)[:10] # Ultimate fallback
                     
-                    i_id = item_map.get(sku)
-                    l_id = loc_map.get(loc_name)
                     if not i_id or not l_id: continue
                     
                     key = (i_id, l_id, expiry)
@@ -566,6 +564,12 @@ def admin_import_inventory():
                         inv = Inventory(item_id=i_id, location_id=l_id, quantity=qty, expiry=expiry, worker_name=current_user.username)
                         db.session.add(inv)
                         inv_map[key] = inv
+                    
+                    # LOG TRANSACTION (Missing piece)
+                    db.session.add(Transaction(
+                        type='IN', item_id=i_id, location_id=l_id, quantity=qty, user_id=current_user.id,
+                        expiry=expiry, worker_name=current_user.username, remarks="Bulk Import"
+                    ))
                     
                     if idx % 50 == 0: db.session.commit() # Batch commit
                     count += 1

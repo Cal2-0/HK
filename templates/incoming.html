@@ -30,40 +30,40 @@
         <input type="text" id="batch_remarks" placeholder="Optional details">
       </div>
     </div>
-  </div>
 
-  <!-- Input Section -->
-  <div class="input-row">
-    <div class="form-group" style="position: relative;">
-      <label for="item_search">Item Details</label>
-      <input type="text" id="item_search" placeholder="Scan or type item..." autocomplete="off">
-      <div id="item_results" class="autocomplete-results"></div>
-      <input type="hidden" id="selected_item_id">
-    </div>
+    <div
+      style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-top: 2rem; padding-top: 2rem; border-top: 1px solid var(--border-color);">
+      <div class="form-group" style="position: relative;">
+        <label for="item_search">Item Details</label>
+        <input type="text" id="item_search" placeholder="Scan or type item..." autocomplete="off">
+        <div id="item_results" class="autocomplete-results"></div>
+        <input type="hidden" id="selected_item_id">
+      </div>
 
-    <div class="form-group" style="position: relative;">
-      <label for="location_id">Location</label>
-      <input type="text" id="location_id" placeholder="Ex: A101" autocomplete="off">
-    </div>
+      <div class="form-group" style="position: relative;">
+        <label for="location_id">Location</label>
+        <input type="text" id="location_id" placeholder="Ex: A101" autocomplete="off">
+      </div>
 
-    <div class="form-group">
-      <label for="quantity">Qty</label>
-      <input type="number" id="quantity" placeholder="0" step="1" min="0">
-    </div>
+      <div class="form-group">
+        <label for="quantity">Qty</label>
+        <input type="number" id="quantity" placeholder="0" step="1" min="0">
+      </div>
 
-    <div class="form-group">
-      <label for="pallets">Plts</label>
-      <input type="number" id="pallets" placeholder="0" step="1" min="0">
-    </div>
+      <div class="form-group">
+        <label for="pallets">Plts</label>
+        <input type="number" id="pallets" placeholder="0" step="1" min="0">
+      </div>
 
-    <div class="form-group">
-      <label for="expiry">Expiry (MM/YY)</label>
-      <input type="text" id="expiry" placeholder="MM/YY">
-    </div>
+      <div class="form-group">
+        <label for="expiry">Expiry (MM/YY)</label>
+        <input type="text" id="expiry" placeholder="MM/YY">
+      </div>
 
-    <div class="form-group">
-      <label>&nbsp;</label>
-      <button class="btn btn-primary" id="add_btn" onclick="addItem()" style="width: 100%;">Add Item</button>
+      <div class="form-group">
+        <label>&nbsp;</label>
+        <button class="btn btn-primary" id="add_btn" onclick="addItem()" style="width: 100%;">Add Item</button>
+      </div>
     </div>
   </div>
 
