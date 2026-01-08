@@ -80,7 +80,7 @@
           </td>
           <td>{{ log.item.brand if log.item else '-' }}</td>
           <td><span class="badge">{{ log.location.name if log.location else '<Deleted>' }}</span></td>
-          <td class="expiry-{{ check_expiry(log.expiry) }}">{{ log.expiry or '-' }}</td>
+          <td class="expiry-{{ log.expiry | check_expiry }}">{{ log.expiry or '-' }}</td>
           <td
             style="color: {% if log.type == 'IN' %}var(--success){% else %}var(--danger){% endif %}; font-weight: 600;">
             {{ "+" if log.type == 'IN' else "-" }}{{ log.quantity | abs }}

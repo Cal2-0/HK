@@ -141,7 +141,7 @@
           <td><span class="badge">{{ trans.location.name }}</span></td>
           <td style="color: var(--success); font-weight: 600;">+{{ trans.quantity }}</td>
           <td>{{ trans.pallets or '-' }}</td>
-          <td class="expiry-{{ check_expiry(trans.expiry) }}">{{ trans.expiry or '-' }}</td>
+          <td class="expiry-{{ trans.expiry | check_expiry }}">{{ trans.expiry or '-' }}</td>
           <td>{{ trans.worker_name or (trans.user.username if trans.user else 'N/A') }}</td>
           <td>{{ trans.remarks or '-' }}</td>
         </tr>
