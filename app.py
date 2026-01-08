@@ -531,7 +531,28 @@ def admin_import_inventory():
                     if qty <= 0: continue
                     
                     expiry = ''
-                    if len(row) > 3: expiry = str(row.iloc[3]).strip()
+                    if len(row) > 3: 
+                        val = row.iloc[3]
+                        if pd.notna(val):
+                            try:
+                                # Safe string conversion first
+                                import datetime as dt_mod # Local import to verify types
+                                if isinstance(val, (datetime, date, pd.Timestamp)):
+                                    expiry = val.strftime('%m/%y')
+                                else:
+                                    # Fallback for strings
+                                    s_val = str(val).strip()
+                                    # Try to parse strict formats if it looks like a full date
+                                    if len(s_val) > 8:
+                                        try: 
+                                            parsed = pd.to_datetime(s_val, errors='raise')
+                                            expiry = parsed.strftime('%m/%y')
+                                        except: 
+                                            expiry = s_val[:10] # Hard truncate fallback
+                                    else:
+                                        expiry = s_val[:10]
+                            except:
+                                expiry = str(val)[:10] # Ultimate fallback
                     
                     i_id = item_map.get(sku)
                     l_id = loc_map.get(loc_name)
