@@ -684,6 +684,37 @@ def admin_items():
     if q: query = query.filter(db.or_(Item.name.ilike(f'%{q}%'), Item.sku.ilike(f'%{q}%')))
     return render_template('admin_items.html', items=query.paginate(page=page, per_page=50), q=q)
 
+@app.route('/admin/fix-reports')
+@login_required
+def admin_fix_reports():
+    if not current_user.is_admin(): return redirect(url_for('dashboard'))
+    
+    count = 0
+    # simple heuristic: for every inventory item > 0, ensure at least one 'IN' transaction exists
+    try:
+        inventory = Inventory.query.filter(Inventory.quantity > 0).all()
+        for inv in inventory:
+            exists = Transaction.query.filter_by(item_id=inv.item_id, location_id=inv.location_id).first()
+            if not exists:
+                # Create backfill record
+                db.session.add(Transaction(
+                    type='IN',
+                    item_id=inv.item_id,
+                    location_id=inv.location_id,
+                    quantity=inv.quantity,
+                    user_id=current_user.id,
+                    timestamp=datetime.utcnow(),
+                    expiry=inv.expiry,
+                    worker_name='System',
+                    remarks="Opening Balance (Restored)"
+                ))
+                count += 1
+        db.session.commit()
+        return f"Fixed! Restored {count} missing transaction records. <a href='/reports'>Go to Reports</a>"
+    except Exception as e:
+        db.session.rollback()
+        return f"Error: {e}"
+
 @app.route('/admin/locations', methods=['GET', 'POST'])
 @login_required
 def admin_locations():
