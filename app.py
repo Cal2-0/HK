@@ -449,13 +449,59 @@ def logs():
 
 @app.route('/reports')
 @login_required
+@app.route('/reports')
+@login_required
 def reports():
-    query = Transaction.query.outerjoin(Item)
+    query = Transaction.query.outerjoin(Item).outerjoin(Location)
+    
+    # 1. Search (Item Name, SKU, Loc Name, Doc Number)
     search = request.args.get('search', '').strip()
     if search:
-        query = query.outerjoin(Location).filter(db.or_(Item.name.ilike(f'%{search}%'), Item.sku.ilike(f'%{search}%'), Location.name.ilike(f'%{search}%')))
+        query = query.filter(db.or_(
+            Item.name.ilike(f'%{search}%'), 
+            Item.sku.ilike(f'%{search}%'), 
+            Location.name.ilike(f'%{search}%'),
+            Transaction.doc_number.ilike(f'%{search}%')
+        ))
     
+    # 2. Brand Filter
+    brand = request.args.get('brand', '').strip()
+    if brand:
+        query = query.filter(Item.brand.ilike(f'%{brand}%'))
+        
+    # 3. Type Filter (IN/OUT)
+    t_type = request.args.get('type', '').strip()
+    if t_type:
+        query = query.filter(Transaction.type == t_type.upper())
+        
+    # 4. Quantity Range
+    try:
+        min_qty_str = request.args.get('min_qty', '').strip()
+        if min_qty_str:
+            query = query.filter(Transaction.quantity >= float(min_qty_str))
+        
+        max_qty_str = request.args.get('max_qty', '').strip()
+        if max_qty_str:
+            query = query.filter(Transaction.quantity <= float(max_qty_str))
+    except: pass
+    
+    # 5. Date Range
+    start_date = request.args.get('start_date')
+    if start_date:
+        try: query = query.filter(Transaction.timestamp >= datetime.strptime(start_date, '%Y-%m-%d'))
+        except: pass
+        
+    end_date = request.args.get('end_date')
+    if end_date:
+        try: 
+            # End of the day
+            e_date = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+            query = query.filter(Transaction.timestamp < e_date)
+        except: pass
+
+    # Limit results
     transactions = query.order_by(Transaction.timestamp.desc()).limit(500).all()
+    
     return render_template('reports.html', transactions=transactions, today=date.today(), timedelta=timedelta)
 
 @app.route('/admin/db')
