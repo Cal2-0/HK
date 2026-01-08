@@ -792,8 +792,8 @@ def dashboard():
             
         # Expiry - Fetch only needed
         expiring = []
-        # Optimization: Fetch only items with quantity > 0
-        inv_items = Inventory.query.filter(Inventory.quantity > 0).all()
+        # Optimization: Fetch only items with quantity > 0, and eager load Item details
+        inv_items = Inventory.query.filter(Inventory.quantity > 0).options(joinedload(Inventory.item)).all()
         for i in inv_items:
             status = check_expiry(i.expiry)
             if status in ['expired', 'expiring']: expiring.append(i)
@@ -821,14 +821,27 @@ def dashboard():
 @app.route('/warehouse')
 @login_required
 def warehouse():
-    locs = db.session.query(Location).join(Inventory).filter(Inventory.quantity > 0).distinct().order_by(Location.name).all()
+    # OPTIMIZATION: Use joinedload to fetch Location + Inventory + Item in ONE query.
+    # accessing l.get_used_pallets() in a loop caused N+1 queries (1 query per location).
+    # This approach fetches everything once and processes in memory (super fast for <10k items).
+    locs = Location.query.options(
+        joinedload(Location.inventory).joinedload(Inventory.item)
+    ).order_by(Location.name).all()
+    
     data = []
     for l in locs:
-        used = l.get_used_pallets()
+        # Filter in-memory
+        valid_inv = [i for i in l.inventory if i.quantity > 0]
+        
+        # Original logic hid empty locations. Preserve that? 
+        # Yes, typically maps show where stuff is.
+        if not valid_inv: continue 
+        
+        used = len(valid_inv)
         data.append({
-            'location': l, 'used_pallets': used, 'free_pallets': l.get_free_pallets(),
+            'location': l, 'used_pallets': used, 'free_pallets': max(0, l.max_pallets - used),
             'max_pallets': l.max_pallets, 'usage_percent': (used/l.max_pallets*100) if l.max_pallets else 0,
-            'inventory_items': [i for i in l.inventory if i.quantity > 0]
+            'inventory_items': valid_inv
         })
     return render_template('warehouse.html', location_data=data)
 
