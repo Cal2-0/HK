@@ -148,20 +148,31 @@
 <script>
   let cart = [];
   let selectedItem = null;
+  let currentFocus = -1;
 
   window.onload = () => document.getElementById('item_search').focus();
 
   // Navigation Logic
-  // ... similar to incoming but with location fetching ...
 
   document.getElementById('item_search').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    const results = document.getElementById('item_results').getElementsByClassName('result-item');
+    if (e.key === 'ArrowDown') {
+      currentFocus++;
+      addActive(results);
+    } else if (e.key === 'ArrowUp') {
+      currentFocus--;
+      addActive(results);
+    } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (selectedItem) { document.getElementById('location_id').focus(); }
-      else {
-        const first = document.querySelector('#item_results .result-item');
-        if (first) first.click();
+      if (currentFocus > -1 && results.length > 0) {
+        if (results[currentFocus]) results[currentFocus].click();
+      } else {
+        // If already selected or no results, move to location
+        document.getElementById('location_id').focus();
       }
+    } else if (e.key === 'Escape') {
+      document.getElementById('item_results').style.display = 'none';
+      currentFocus = -1;
     }
   });
 
@@ -172,6 +183,7 @@
       if (first && !document.getElementById('location_id').value) {
         first.click();
       }
+      // Strictly go next
       document.getElementById('quantity').focus();
     }
   });
@@ -201,6 +213,7 @@
     selectedItem = null;
     document.getElementById('location_id').value = '';
     document.getElementById('stock_display').style.display = 'none';
+    currentFocus = -1;
 
     if (q.length < 1) { resultsDiv.style.display = 'none'; return; }
 
@@ -219,10 +232,26 @@
               div.onclick = () => selectItem(item);
               resultsDiv.appendChild(div);
             });
-          } else { resultsDiv.style.display = 'none'; }
+            currentFocus = 0;
+          } else { resultsDiv.style.display = 'none'; currentFocus = -1; }
         });
     }, 200);
   });
+
+  function addActive(x) {
+    if (!x) return false;
+    removeActive(x);
+    if (currentFocus >= x.length) currentFocus = 0;
+    if (currentFocus < 0) currentFocus = (x.length - 1);
+    x[currentFocus].classList.add("selected");
+    x[currentFocus].scrollIntoView({ block: 'nearest' });
+  }
+
+  function removeActive(x) {
+    for (let i = 0; i < x.length; i++) {
+      x[i].classList.remove("selected");
+    }
+  }
 
   function selectItem(item) {
     selectedItem = item;

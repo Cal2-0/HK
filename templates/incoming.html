@@ -155,11 +155,13 @@
   // ... (Keep existing JS logic, just ensuring IDs match) ...
   let cart = [];
   let selectedItem = null;
+  let currentFocus = -1;
 
   window.onload = () => document.getElementById('item_search').focus();
 
   // Navigation Logic
-  const inputs = ['item_search', 'location_id', 'quantity', 'pallets', 'expiry', 'add_btn'];
+  // Removed 'item_search' from generic loop to handle it specifically
+  const inputs = ['location_id', 'quantity', 'pallets', 'expiry', 'add_btn'];
   inputs.forEach((id, index) => {
     const el = document.getElementById(id);
     if (el) {
@@ -169,10 +171,6 @@
           if (id === 'add_btn' || id === 'expiry') {
             // On last field or button, add the item
             addItem();
-          } else if (id === 'item_search') {
-            // Special handling for search selection handled elsewhere or fallthrough
-            const next = document.getElementById(inputs[index + 1]);
-            if (next) next.focus();
           } else {
             const next = document.getElementById(inputs[index + 1]);
             if (next) next.focus();
@@ -191,6 +189,7 @@
     clearTimeout(debounceTimer);
     const q = e.target.value;
     selectedItem = null;
+    currentFocus = -1;
 
     if (q.length < 1) {
       resultsDiv.style.display = 'none';
@@ -212,22 +211,50 @@
               div.onclick = () => selectItem(item);
               resultsDiv.appendChild(div);
             });
+            currentFocus = 0;
           } else {
             resultsDiv.style.display = 'none';
+            currentFocus = -1;
           }
         });
     }, 200);
   });
 
   searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      // If results visible, pick first
-      if (resultsDiv.style.display === 'block') {
-        const first = resultsDiv.querySelector('.result-item');
-        if (first) first.click();
+    const results = resultsDiv.getElementsByClassName('result-item');
+    if (e.key === 'ArrowDown') {
+      currentFocus++;
+      addActive(results);
+    } else if (e.key === 'ArrowUp') {
+      currentFocus--;
+      addActive(results);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (currentFocus > -1 && results.length > 0) {
+        if (results[currentFocus]) results[currentFocus].click();
+      } else {
+        // If no results or closed, just move to next field
+        document.getElementById('location_id').focus();
       }
+    } else if (e.key === 'Escape') {
+      resultsDiv.style.display = 'none';
     }
   });
+
+  function addActive(x) {
+    if (!x) return false;
+    removeActive(x);
+    if (currentFocus >= x.length) currentFocus = 0;
+    if (currentFocus < 0) currentFocus = (x.length - 1);
+    x[currentFocus].classList.add("selected");
+    x[currentFocus].scrollIntoView({ block: 'nearest' });
+  }
+
+  function removeActive(x) {
+    for (let i = 0; i < x.length; i++) {
+      x[i].classList.remove("selected");
+    }
+  }
 
   function selectItem(item) {
     selectedItem = item;

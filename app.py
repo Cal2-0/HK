@@ -498,6 +498,52 @@ def reports():
             query = query.filter(Transaction.timestamp < e_date)
         except: pass
 
+    # Export CSV Logic
+    if request.args.get('export') == 'csv':
+        # Fetch data (higher limit for export)
+        transactions = query.order_by(Transaction.timestamp.desc()).limit(5000).all()
+        
+        data = []
+        for t in transactions:
+            data.append({
+                'Date': t.timestamp.strftime('%Y-%m-%d'),
+                'Time': (t.timestamp + timedelta(hours=4)).strftime('%H:%M'),
+                'Type': ('IN (+)' if t.quantity > 0 else 'OUT (-)'),
+                'Doc #': t.doc_number or '-',
+                'Item Code': t.item.sku if t.item else '<Deleted>',
+                'Item Name': t.item.name if t.item else '<Deleted>',
+                'Location': t.location.name if t.location else '<Deleted>',
+                'Qty': t.quantity,
+                'Brand': t.item.brand if t.item else '-',
+                'Plts': t.pallets or '-',
+                'Expiry': t.expiry or '-',
+                'User': t.worker_name or (t.user.username if t.user else 'System'),
+                'Remarks': t.remarks or '-'
+            })
+            
+        df = pd.DataFrame(data)
+        
+        # Filter columns if requested
+        cols_param = request.args.get('cols')
+        if cols_param:
+            # Map frontend keys to DataFrame columns
+            key_map = {
+                'date': 'Date', 'time': 'Time', 'type': 'Type', 'doc': 'Doc #',
+                'sku': 'Item Code', 'name': 'Item Name', 'loc': 'Location',
+                'qty': 'Qty', 'brand': 'Brand', 'plts': 'Plts',
+                'expiry': 'Expiry', 'user': 'User', 'remarks': 'Remarks'
+            }
+            requested_cols = [key_map.get(k) for k in cols_param.split(',') if key_map.get(k)]
+            if not df.empty and requested_cols:
+                 valid_cols = [c for c in requested_cols if c in df.columns]
+                 if valid_cols: df = df[valid_cols]
+        
+        return Response(
+            df.to_csv(index=False),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment;filename=inventory_report_{date.today()}.csv"}
+        )
+
     # Limit results
     transactions = query.order_by(Transaction.timestamp.desc()).limit(500).all()
     
