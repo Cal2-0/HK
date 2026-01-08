@@ -731,16 +731,15 @@ def admin_items():
 @app.route('/admin/fix-reports')
 @login_required
 def admin_fix_reports():
-    if not current_user.is_admin(): return redirect(url_for('dashboard'))
-    
-    count = 0
-    # simple heuristic: for every inventory item > 0, ensure at least one 'IN' transaction exists
     try:
+        import traceback
+        if not current_user.is_admin(): return redirect(url_for('dashboard'))
+        
+        count = 0
         inventory = Inventory.query.filter(Inventory.quantity > 0).all()
         for inv in inventory:
             exists = Transaction.query.filter_by(item_id=inv.item_id, location_id=inv.location_id).first()
             if not exists:
-                # Create backfill record
                 db.session.add(Transaction(
                     type='IN',
                     item_id=inv.item_id,
@@ -755,9 +754,9 @@ def admin_fix_reports():
                 count += 1
         db.session.commit()
         return f"Fixed! Restored {count} missing transaction records. <a href='/reports'>Go to Reports</a>"
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        return f"Error: {e}"
+        return f"<pre>{traceback.format_exc()}</pre>"
 
 @app.route('/admin/locations', methods=['GET', 'POST'])
 @login_required
