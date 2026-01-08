@@ -602,6 +602,9 @@ def admin_import_inventory():
                             except:
                                 expiry = str(val)[:10] # Ultimate fallback
                     
+                    i_id = item_map.get(sku)
+                    l_id = loc_map.get(loc_name)
+                    
                     if not i_id or not l_id: continue
                     
                     key = (i_id, l_id, expiry)
