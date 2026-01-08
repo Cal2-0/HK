@@ -129,7 +129,7 @@
           <td>
             <div>{{ (trans.date or trans.timestamp).strftime('%Y-%m-%d') }}</div>
             <div style="font-size: 0.8rem; color: var(--text-muted);">
-              {{ (trans.timestamp + timedelta(hours=4)).strftime('%H:%M') }}
+              {{ (trans.timestamp | add_hours(4)).strftime('%H:%M') }}
             </div>
           </td>
           <td>{{ trans.doc_number or '-' }}</td>
