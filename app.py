@@ -732,31 +732,7 @@ def admin_items():
 @app.route('/admin/fix-reports')
 @login_required
 def admin_fix_reports():
-    try:
-        if not current_user.is_admin(): return redirect(url_for('dashboard'))
-        
-        count = 0
-        inventory = Inventory.query.filter(Inventory.quantity > 0).all()
-        for inv in inventory:
-            exists = Transaction.query.filter_by(item_id=inv.item_id, location_id=inv.location_id).first()
-            if not exists:
-                db.session.add(Transaction(
-                    type='IN',
-                    item_id=inv.item_id,
-                    location_id=inv.location_id,
-                    quantity=inv.quantity,
-                    user_id=current_user.id,
-                    timestamp=datetime.utcnow(),
-                    expiry=inv.expiry,
-                    worker_name='System',
-                    remarks="Opening Balance (Restored)"
-                ))
-                count += 1
-        db.session.commit()
-        return f"Fixed! Restored {count} missing transaction records. <a href='/reports'>Go to Reports</a>"
-    except Exception:
-        db.session.rollback()
-        return f"<pre>{traceback.format_exc()}</pre>"
+    return "DEBUG: Route is accessible. If you see this, the server is fine, and the error was in the database logic."
 
 @app.route('/admin/locations', methods=['GET', 'POST'])
 @login_required
