@@ -731,8 +731,6 @@ def admin_items():
 
 @app.route('/admin/fix-reports')
 @login_required
-@app.route('/admin/fix-reports')
-@login_required
 def admin_fix_reports():
     try:
         if not current_user.is_admin(): return redirect(url_for('dashboard'))
