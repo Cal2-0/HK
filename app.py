@@ -1032,13 +1032,15 @@ def admin_locations():
                     except: df = pd.read_excel(file, engine='xlrd')
                     
                     count = 0
+                    new_loc_names = set()
                     for _, row in df.iterrows():
                         name = str(row.iloc[0]).strip() if len(row) > 0 else ''
                         if not name or name == 'nan': continue
                         
                         loc = Location.query.filter_by(name=name).first()
-                        if not loc:
+                        if not loc and name not in new_loc_names:
                             db.session.add(Location(name=name))
+                            new_loc_names.add(name)
                             count += 1
                             
                     db.session.commit()
