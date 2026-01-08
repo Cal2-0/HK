@@ -449,8 +449,6 @@ def logs():
 
 @app.route('/reports')
 @login_required
-@app.route('/reports')
-@login_required
 def reports():
     query = Transaction.query.outerjoin(Item).outerjoin(Location)
     
