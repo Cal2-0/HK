@@ -40,13 +40,16 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_pre_ping': True,
     'pool_recycle': 300,
     'pool_timeout': 30,
-    'pool_size': 10,       # Keep a baseline of connections
-    'max_overflow': 20,    # Allow bursts of traffic
-    'connect_args': {
+    'pool_size': 10,
+    'max_overflow': 20,
+}
+
+# Postgres-specific args (Render)
+if 'sqlite' not in database_url:
+    app.config['SQLALCHEMY_ENGINE_OPTIONS']['connect_args'] = {
         'connect_timeout': 10,
         'application_name': 'inventory_app'
     }
-}
 
 db = SQLAlchemy(app)
 login_manager = LoginManager()
