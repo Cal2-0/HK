@@ -1,6 +1,7 @@
 import os
 import re
 import pandas as pd
+import traceback
 from datetime import datetime, date, timedelta
 from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, flash, redirect, url_for, jsonify, Response
@@ -732,7 +733,6 @@ def admin_items():
 @login_required
 def admin_fix_reports():
     try:
-        import traceback
         if not current_user.is_admin(): return redirect(url_for('dashboard'))
         
         count = 0
