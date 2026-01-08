@@ -212,3 +212,45 @@ function showToast(message, type = 'success') {
         setTimeout(() => toast.remove(), 300);
     }, 3000);
 }
+
+// --- Keyboard Shortcuts ---
+document.addEventListener('keydown', function (e) {
+    // 1. CTRL+S to Save
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        if (typeof finishBatch === 'function') {
+            finishBatch();
+            showToast('Saving Batch...', 'success');
+        }
+        return;
+    }
+
+    // 2. Navigation (Enter & Arrows)
+    const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]), select, button:not([tabindex="-1"])'));
+    if (inputs.length === 0) return;
+
+    const active = document.activeElement;
+    const index = inputs.indexOf(active);
+
+    if (index > -1) {
+        // ENTER -> Move Next
+        if (e.key === 'Enter') {
+            if (active.tagName === 'BUTTON') return;
+            e.preventDefault();
+            const next = inputs[index + 1];
+            if (next) next.focus();
+        }
+
+        // ARROWS
+        if (['ArrowDown', 'ArrowRight'].includes(e.key)) {
+            if (active.tagName === 'SELECT' && !e.altKey) return;
+            const next = inputs[index + 1];
+            if (next) next.focus();
+        }
+        if (['ArrowUp', 'ArrowLeft'].includes(e.key)) {
+            if (active.tagName === 'SELECT' && !e.altKey) return;
+            const prev = inputs[index - 1];
+            if (prev) prev.focus();
+        }
+    }
+});
