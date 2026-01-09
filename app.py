@@ -557,7 +557,11 @@ def reports():
         )
 
     # Limit results
-    transactions = query.order_by(Transaction.timestamp.desc()).limit(500).all()
+    transactions = query.options(
+        joinedload(Transaction.item),
+        joinedload(Transaction.location),
+        joinedload(Transaction.user)
+    ).order_by(Transaction.timestamp.desc()).limit(200).all()
     
     return render_template('reports.html', transactions=transactions, today=date.today(), timedelta=timedelta)
 
