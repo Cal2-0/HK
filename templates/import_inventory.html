@@ -21,6 +21,14 @@
           style="width: 100%; padding: 0.75rem; background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-main); border-radius: 4px;">
       </div>
 
+      <div
+        style="margin-bottom: 1rem; background: var(--bg-card); padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px;">
+        <label style="display: flex; align-items: center; cursor: pointer; gap: 0.5rem; color: var(--danger);">
+          <input type="checkbox" name="reset_inventory" style="width: auto;">
+          <strong>Reset Inventory</strong> (Clear ALL existing stock before import)
+        </label>
+      </div>
+
       <div style="display: flex; gap: 1rem; margin-top: 1rem;">
         <button type="submit" class="btn btn-primary" style="flex: 1;">🚀 Upload & Sync</button>
         <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>

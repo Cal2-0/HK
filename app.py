@@ -500,8 +500,12 @@ def reports():
 
     # Export CSV Logic
     if request.args.get('export') == 'csv':
-        # Fetch data (higher limit for export)
-        transactions = query.order_by(Transaction.timestamp.desc()).limit(5000).all()
+        # Fetch data (optimize with joinedload and higher limit)
+        transactions = query.options(
+            joinedload(Transaction.item), 
+            joinedload(Transaction.location), 
+            joinedload(Transaction.user)
+        ).order_by(Transaction.timestamp.desc()).limit(10000).all()
         
         data = []
         for t in transactions:
@@ -575,6 +579,9 @@ def admin_import_inventory():
         file = request.files['file']
         if file.filename == '': return redirect(request.url)
         
+        # Reset Logic
+        reset_inventory = request.form.get('reset_inventory') == 'on'
+        
         try:
             try: df = pd.read_excel(file, engine='openpyxl')
             except: df = pd.read_excel(file, engine='xlrd')
@@ -582,72 +589,98 @@ def admin_import_inventory():
             # Pre-load maps for speed
             item_map = {item.sku: item.id for item in Item.query.all()}
             loc_map = {loc.name: loc.id for loc in Location.query.all()}
-            new_items, new_locs = [], []
-            inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in Inventory.query.all()}
+            
+            # If Reset, clear Inventory table
+            if reset_inventory:
+                try:
+                    num_deleted = db.session.query(Inventory).delete()
+                    print(f"♻️ Reset Inventory: Deleted {num_deleted} records.")
+                    db.session.flush() # Ensure delete happens before inserts
+                    inv_map = {} # Empty map since we wiped it
+                except Exception as e:
+                    db.session.rollback()
+                    flash(f'Error resetting inventory: {e}')
+                    return redirect(request.url)
+            else:
+                inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in Inventory.query.all()}
             
             count, errors = 0, 0
             
             # Phase 1: Create missing items/locs
-            for _, row in df.iterrows():
+            # Use set to avoid duplicates during iteration
+            new_skus = set()
+            new_locs = set()
+            
+            # Optimize: First pass to collect unique new items/locs
+            for row in df.itertuples(index=False):
                 try:
-                    loc_name = str(row.iloc[0]).strip()
-                    sku = str(row.iloc[1]).strip()
-                    desc = str(row.iloc[2]).strip()
-                    if not sku or sku == 'nan': continue
+                    # Column mapping by index (safer than names if headers vary)
+                    # Assumes: Location (0), SKU (1), Desc (2)
+                    if len(row) < 2: continue
+                    loc_name = str(row[0]).strip()
+                    sku = str(row[1]).strip()
+                    desc = str(row[2]).strip() if len(row) > 2 else ''
                     
-                    if sku not in item_map: 
-                         item = Item(sku=sku, name=desc)
-                         db.session.add(item)
-                         db.session.flush() # Get ID
-                         item_map[sku] = item.id
-                    
-                    if loc_name not in loc_map:
-                         loc = Location(name=loc_name)
-                         db.session.add(loc)
-                         db.session.flush()
-                         loc_map[loc_name] = loc.id
+                    if not sku or sku.lower() == 'nan': continue
+                    if sku not in item_map: new_skus.add((sku, desc))
+                    if loc_name not in loc_map: new_locs.add(loc_name)
                 except: pass
+                
+            # Bulk create items
+            for sku, desc in new_skus:
+                if sku not in item_map: # Double check
+                    item = Item(sku=sku, name=desc or 'Unknown')
+                    db.session.add(item)
+                    db.session.flush()
+                    item_map[sku] = item.id
+            
+            # Bulk create locs
+            for loc_name in new_locs:
+                if loc_name not in loc_map:
+                    loc = Location(name=loc_name)
+                    db.session.add(loc)
+                    db.session.flush()
+                    loc_map[loc_name] = loc.id
+            
             db.session.commit()
             
             # Phase 2: Process Inventory
-            for idx, row in df.iterrows():
+            batch_txns = []
+            
+            for idx, row in enumerate(df.itertuples(index=False)):
                 try:
                     if len(row) < 3: continue
-                    loc_name = str(row.iloc[0]).strip()
-                    sku = str(row.iloc[1]).strip()
-                    if not sku or sku == 'nan': continue
+                    loc_name = str(row[0]).strip()
+                    sku = str(row[1]).strip()
+                    if not sku or sku.lower() == 'nan': continue
                     
-                    # Safe get
                     qty = 0
                     if len(row) > 4: 
-                        try: qty = float(row.iloc[4])
+                        try: qty = float(row[4])
                         except: pass
                     if qty <= 0: continue
                     
                     expiry = ''
                     if len(row) > 3: 
-                        val = row.iloc[3]
+                        val = row[3]
                         if pd.notna(val):
                             try:
-                                # Safe string conversion first
-                                import datetime as dt_mod # Local import to verify types
+                                s_val = str(val).strip()
+                                # Handle datetime objects directly
                                 if isinstance(val, (datetime, date, pd.Timestamp)):
                                     expiry = val.strftime('%m/%y')
-                                else:
-                                    # Fallback for strings
-                                    s_val = str(val).strip()
-                                    # Try to parse strict formats if it looks like a full date
-                                    if len(s_val) > 8:
-                                        try: 
-                                            parsed = pd.to_datetime(s_val, errors='raise')
-                                            expiry = parsed.strftime('%m/%y')
-                                        except: 
-                                            expiry = s_val[:10] # Hard truncate fallback
-                                    else:
+                                # Handle strings
+                                elif len(s_val) >= 8:
+                                    try: 
+                                        parsed = pd.to_datetime(s_val, errors='raise')
+                                        expiry = parsed.strftime('%m/%y')
+                                    except: 
                                         expiry = s_val[:10]
+                                else:
+                                    expiry = s_val[:10]
                             except:
-                                expiry = str(val)[:10] # Ultimate fallback
-                    
+                                expiry = str(val)[:10]
+
                     i_id = item_map.get(sku)
                     l_id = loc_map.get(loc_name)
                     
@@ -655,28 +688,33 @@ def admin_import_inventory():
                     
                     key = (i_id, l_id, expiry)
                     inv = inv_map.get(key)
+                    
                     if inv: 
                         inv.quantity += qty
                     else:
                         inv = Inventory(item_id=i_id, location_id=l_id, quantity=qty, expiry=expiry, worker_name=current_user.username)
                         db.session.add(inv)
-                        inv_map[key] = inv
+                        inv_map[key] = inv # Update map so next row with same key updates this obj
                     
-                    # LOG TRANSACTION (Missing piece)
-                    db.session.add(Transaction(
+                    # Create Transaction Object but don't add to session yet to save overhead? 
+                    # Actually standard add is fine, just flush periodically.
+                    txn = Transaction(
                         type='IN', item_id=i_id, location_id=l_id, quantity=qty, user_id=current_user.id,
-                        expiry=expiry, worker_name=current_user.username, remarks="Bulk Import"
-                    ))
+                        expiry=expiry, worker_name=current_user.username, remarks="Bulk Import/Reset" if reset_inventory else "Bulk Import"
+                    )
+                    db.session.add(txn)
                     
-                    if idx % 50 == 0: db.session.commit() # Batch commit
+                    if idx % 500 == 0: 
+                         db.session.commit() # Larger batch size
                     count += 1
                 except: errors += 1
                 
             db.session.commit()
-            flash(f'Imported {count} items. Errors: {errors}')
+            flash(f'Imported {count} items. Errors: {errors}. Reset: {"Yes" if reset_inventory else "No"}')
         except Exception as e:
             db.session.rollback()
             flash(f'Critical Import Error: {e}')
+            print(traceback.format_exc())
             
     return render_template('import_inventory.html')
 
