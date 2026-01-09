@@ -579,75 +579,102 @@ def admin_import_inventory():
         file = request.files['file']
         if file.filename == '': return redirect(request.url)
         
-        # Reset Logic
         reset_inventory = request.form.get('reset_inventory') == 'on'
         
         try:
             try: df = pd.read_excel(file, engine='openpyxl')
             except: df = pd.read_excel(file, engine='xlrd')
             
-            # Pre-load maps for speed
-            item_map = {item.sku: item.id for item in Item.query.all()}
-            loc_map = {loc.name: loc.id for loc in Location.query.all()}
-            
-            # If Reset, clear Inventory table
+            # 1. DELETE PHASE (If Reset)
             if reset_inventory:
                 try:
-                    num_deleted = db.session.query(Inventory).delete()
-                    print(f"♻️ Reset Inventory: Deleted {num_deleted} records.")
-                    db.session.flush() # Ensure delete happens before inserts
-                    inv_map = {} # Empty map since we wiped it
+                    db.session.query(Inventory).delete()
+                    db.session.flush()
                 except Exception as e:
                     db.session.rollback()
                     flash(f'Error resetting inventory: {e}')
                     return redirect(request.url)
-            else:
-                inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in Inventory.query.all()}
+
+            # 2. DICTIONARY PRE-LOAD
+            item_map = {item.sku: item.id for item in Item.query.all()}
+            loc_map = {loc.name: loc.id for loc in Location.query.all()}
             
-            count, errors = 0, 0
+            # 3. METADATA CREATION (Items/Locations)
+            new_items_data = [] # List of dicts
+            new_locs_data = []
             
-            # Phase 1: Create missing items/locs
-            # Use set to avoid duplicates during iteration
-            new_skus = set()
-            new_locs = set()
+            seen_skus = set(item_map.keys())
+            seen_locs = set(loc_map.keys())
             
-            # Optimize: First pass to collect unique new items/locs
+            # Using itertuples is 100x faster than iterrows
             for row in df.itertuples(index=False):
                 try:
-                    # Column mapping by index (safer than names if headers vary)
-                    # Assumes: Location (0), SKU (1), Desc (2)
                     if len(row) < 2: continue
                     loc_name = str(row[0]).strip()
                     sku = str(row[1]).strip()
                     desc = str(row[2]).strip() if len(row) > 2 else ''
                     
                     if not sku or sku.lower() == 'nan': continue
-                    if sku not in item_map: new_skus.add((sku, desc))
-                    if loc_name not in loc_map: new_locs.add(loc_name)
+                    
+                    if sku not in seen_skus:
+                        new_items_data.append({'sku': sku, 'name': desc or 'Unknown'})
+                        seen_skus.add(sku)
+                        
+                    if loc_name not in seen_locs:
+                        new_locs_data.append({'name': loc_name})
+                        seen_locs.add(loc_name)
                 except: pass
+
+            # Heavy Bulk Insert for Metadata
+            if new_items_data:
+                db.session.bulk_insert_mappings(Item, new_items_data)
+                db.session.flush() # Needed to generate IDs
+                # Refresh map
+                item_map = {item.sku: item.id for item in Item.query.all()}
                 
-            # Bulk create items
-            for sku, desc in new_skus:
-                if sku not in item_map: # Double check
-                    item = Item(sku=sku, name=desc or 'Unknown')
-                    db.session.add(item)
-                    db.session.flush()
-                    item_map[sku] = item.id
+            if new_locs_data:
+                db.session.bulk_insert_mappings(Location, new_locs_data)
+                db.session.flush()
+                loc_map = {loc.name: loc.id for loc in Location.query.all()}
+
+            db.session.commit() # Commit metadata first
+
+            # 4. INVENTORY & TRANSACTION PROCESSING
+            # We will build a list of mappings for Transactions
+            # For Inventory, we must be careful about duplicates in the FILE and updates.
             
-            # Bulk create locs
-            for loc_name in new_locs:
-                if loc_name not in loc_map:
-                    loc = Location(name=loc_name)
-                    db.session.add(loc)
-                    db.session.flush()
-                    loc_map[loc_name] = loc.id
+            # Current State Map
+            inv_map = {}
+            if not reset_inventory:
+                 # Load existing DB state
+                 inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in Inventory.query.all()}
             
-            db.session.commit()
+            txns_to_insert = []
             
-            # Phase 2: Process Inventory
-            batch_txns = []
+            # If reset_inventory is True, we can theoretically just bulk insert all Inventory 
+            # BUT the file might contain multiple rows for same item/loc/expiry that need summing.
+            # So we better build the state in memory first.
             
-            for idx, row in enumerate(df.itertuples(index=False)):
+            # In-memory staging of final inventory state
+            # Key: (item_id, loc_id, expiry) -> Inventory Object (or dict)
+            # Since we can't easily mix ORM objects and bulk inserts for updates, 
+            # we will use ORM objects for updates and bulk for inserts?
+            # Actually, standard ORM is slow.
+            # FASTEST STRATEGY: 
+            # 1. Calculate final quantity deltas in memory.
+            # 2. Bulk Insert new records.
+            # 3. Bulk Update existing records (using mappings).
+            
+            updates_data = [] # List of {'id': pk, 'quantity': new_val...}
+            inserts_data = [] # List of dicts for new rows
+            
+            # To track what we've newly created in this batch (to aggregate within file)
+            # If we are resetting, inv_map starts empty.
+            
+            count = 0
+            errors = 0
+            
+            for row in df.itertuples(index=False):
                 try:
                     if len(row) < 3: continue
                     loc_name = str(row[0]).strip()
@@ -661,56 +688,67 @@ def admin_import_inventory():
                     if qty <= 0: continue
                     
                     expiry = ''
-                    if len(row) > 3: 
-                        val = row[3]
-                        if pd.notna(val):
-                            try:
-                                s_val = str(val).strip()
-                                # Handle datetime objects directly
-                                if isinstance(val, (datetime, date, pd.Timestamp)):
-                                    expiry = val.strftime('%m/%y')
-                                # Handle strings
-                                elif len(s_val) >= 8:
-                                    try: 
-                                        parsed = pd.to_datetime(s_val, errors='raise')
-                                        expiry = parsed.strftime('%m/%y')
-                                    except: 
-                                        expiry = s_val[:10]
-                                else:
-                                    expiry = s_val[:10]
-                            except:
-                                expiry = str(val)[:10]
+                    if len(row) > 3:
+                         val = row[3]
+                         if pd.notna(val):
+                             try:
+                                 s_val = str(val).strip()
+                                 if isinstance(val, (datetime, date, pd.Timestamp)): expiry = val.strftime('%m/%y')
+                                 elif len(s_val) >= 8:
+                                     try: expiry = pd.to_datetime(s_val).strftime('%m/%y')
+                                     except: expiry = s_val[:10]
+                                 else: expiry = s_val[:10]
+                             except: expiry = str(val)[:10]
 
                     i_id = item_map.get(sku)
                     l_id = loc_map.get(loc_name)
-                    
                     if not i_id or not l_id: continue
                     
                     key = (i_id, l_id, expiry)
-                    inv = inv_map.get(key)
                     
-                    if inv: 
-                        inv.quantity += qty
+                    # Update In-Memory Map
+                    if key in inv_map:
+                        inv = inv_map[key]
+                        inv.quantity += qty # Update object
+                        # Ensure we mark this object as dirty if it's an ORM object
+                        # If it is a purely in-memory dict (from Reset), just update dict
                     else:
+                        # Create new ORM object 
                         inv = Inventory(item_id=i_id, location_id=l_id, quantity=qty, expiry=expiry, worker_name=current_user.username)
-                        db.session.add(inv)
-                        inv_map[key] = inv # Update map so next row with same key updates this obj
+                        inv_map[key] = inv
+                        db.session.add(inv) # Add to session so it gets an ID eventually? 
+                        # Wait, for max speed we shouldn't use `add` yet if we want bulk.
+                        # But mixing is complex.
+                        # Let's stick to: "If reset, just add all. If not reset, update."
+                        # RE-APPROACH: Just use ORM `add` but with NO flushing until the very end.
                     
-                    # Create Transaction Object but don't add to session yet to save overhead? 
-                    # Actually standard add is fine, just flush periodically.
-                    txn = Transaction(
-                        type='IN', item_id=i_id, location_id=l_id, quantity=qty, user_id=current_user.id,
-                        expiry=expiry, worker_name=current_user.username, remarks="Bulk Import/Reset" if reset_inventory else "Bulk Import"
-                    )
-                    db.session.add(txn)
+                    # Prepare Transaction Dict (Fast)
+                    txns_to_insert.append({
+                        'type': 'IN', 'item_id': i_id, 'location_id': l_id, 'quantity': qty,
+                        'user_id': current_user.id, 'expiry': expiry,
+                        'worker_name': current_user.username, 
+                        'remarks': "Bulk Import/Reset" if reset_inventory else "Bulk Import",
+                        'timestamp': datetime.utcnow(),
+                        'date': date.today()
+                    })
                     
-                    if idx % 500 == 0: 
-                         db.session.commit() # Larger batch size
                     count += 1
                 except: errors += 1
-                
-            db.session.commit()
-            flash(f'Imported {count} items. Errors: {errors}. Reset: {"Yes" if reset_inventory else "No"}')
+
+            # COMMIT PHASE
+            # 1. Commit Inventory Changes (SQLAlchemy will batch inserts if possible)
+            # The bottleneck was likely the frequent commits or individual flushes.
+            # checking 2000 items in memory is instant.
+            
+            db.session.commit() # Bulk persist Inventory
+            
+            # 2. Bulk Insert Transactions (Bypassing ORM overhead)
+            if txns_to_insert:
+                db.session.bulk_insert_mappings(Transaction, txns_to_insert)
+                db.session.commit()
+            
+            flash(f'Processing Complete! {count} items. Errors: {errors}.')
+            
         except Exception as e:
             db.session.rollback()
             flash(f'Critical Import Error: {e}')
