@@ -13,7 +13,7 @@ from flask import Flask, render_template, request, flash, redirect, url_for, jso
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import CheckConstraint, UniqueConstraint, text
+from sqlalchemy import CheckConstraint, UniqueConstraint, text, or_, desc, func
 from sqlalchemy.orm import joinedload
 from sqlalchemy.exc import IntegrityError
 
@@ -464,7 +464,7 @@ def reports():
     # 1. Search (Item Name, SKU, Loc Name, Doc Number)
     search = request.args.get('search', '').strip()
     if search:
-        query = query.filter(db.or_(
+        query = query.filter(or_(
             Item.name.ilike(f'%{search}%'), 
             Item.sku.ilike(f'%{search}%'), 
             Location.name.ilike(f'%{search}%'),
@@ -955,7 +955,7 @@ def admin_items():
     page = request.args.get('page', 1, type=int)
     q = request.args.get('q', '').strip()
     query = Item.query
-    if q: query = query.filter(db.or_(Item.name.ilike(f'%{q}%'), Item.sku.ilike(f'%{q}%')))
+    if q: query = query.filter(or_(Item.name.ilike(f'%{q}%'), Item.sku.ilike(f'%{q}%')))
     return render_template('admin_items.html', items=query.paginate(page=page, per_page=50), q=q)
 
 @app.route('/admin/fix-reports')
@@ -1165,7 +1165,7 @@ def warehouse():
 def search_items():
     q = request.args.get('q', '')
     if not q: return {'results': []}
-    items = Item.query.filter(db.or_(Item.name.ilike(f'%{q}%'), Item.sku.ilike(f'%{q}%'))).limit(10).all()
+    items = Item.query.filter(or_(Item.name.ilike(f'%{q}%'), Item.sku.ilike(f'%{q}%'))).limit(10).all()
     return {'results': [{'id': i.id, 'text': f"{i.name} ({i.sku})", 'brand': i.brand} for i in items]}
 
 @app.route('/api/location/<location_id>/inventory')
