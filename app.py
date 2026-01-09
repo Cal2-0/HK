@@ -520,7 +520,7 @@ def reports():
             data.append({
                 'Date': t.timestamp.strftime('%Y-%m-%d'),
                 'Time': (t.timestamp + timedelta(hours=4)).strftime('%H:%M'),
-                'Type': ('IN (+)' if t.quantity > 0 else 'OUT (-)'),
+                'Type': ('IN (+)' if t.type == 'IN' else 'OUT (-)'),
                 'Doc #': t.doc_number or '-',
                 'Item Code': t.item.sku if t.item else '<Deleted>',
                 'Item Name': t.item.name if t.item else '<Deleted>',

@@ -18,8 +18,8 @@
     <div class="nav-links">
       <a href="{{ url_for('dashboard') }}">Dashboard</a>
       <a href="{{ url_for('warehouse') }}">Warehouse</a>
-      <a href="{{ url_for('incoming') }}">Incoming</a>
-      <a href="{{ url_for('outgoing') }}">Outgoing</a>
+      <a href="{{ url_for('incoming') }}">Inbound</a>
+      <a href="{{ url_for('outgoing') }}">Outbound</a>
       <a href="{{ url_for('logs') }}">Logs</a>
       <a href="{{ url_for('reports') }}">Reports</a>
       {% if current_user.is_admin() %}

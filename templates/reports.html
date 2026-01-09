@@ -82,8 +82,8 @@
       <label>Type</label>
       <select name="type">
         <option value="">All</option>
-        <option value="in" {% if request.args.get('type')=='in' %}selected{% endif %}>Incoming (+)</option>
-        <option value="out" {% if request.args.get('type')=='out' %}selected{% endif %}>Outgoing (-)</option>
+        <option value="in" {% if request.args.get('type')=='in' %}selected{% endif %}>Inbound (+)</option>
+        <option value="out" {% if request.args.get('type')=='out' %}selected{% endif %}>Outbound (-)</option>
       </select>
     </div>
 
@@ -153,11 +153,11 @@
       </thead>
       <tbody>
         {% for trans in transactions %}
-        <tr class="{% if trans.quantity > 0 %}row-in{% else %}row-out{% endif %}">
+        <tr class="{% if trans.type == 'IN' %}row-in{% else %}row-out{% endif %}">
           <td>{{ trans.timestamp.strftime('%Y-%m-%d') }}</td>
           <td>{{ (trans.timestamp | add_hours(4)).strftime('%H:%M') }}</td>
           <td>
-            {% if trans.quantity > 0 %}
+            {% if trans.type == 'IN' %}
             <span class="badge badge-success" data-val="1">IN</span>
             {% else %}
             <span class="badge badge-danger" data-val="0">OUT</span>
@@ -168,7 +168,7 @@
           <td>{{ trans.item.name if trans.item else '<Deleted>' }}</td>
           <td>{{ trans.location.name if trans.location else '<Deleted>' }}</td>
           <td data-val="{{ trans.quantity }}"
-            style="font-weight: bold; {% if trans.quantity > 0 %}color: var(--success);{% else %}color: var(--danger);{% endif %}">
+            style="font-weight: bold; {% if trans.type == 'IN' %}color: var(--success);{% else %}color: var(--danger);{% endif %}">
             {{ trans.quantity }}
           </td>
           <td>{{ trans.item.brand if trans.item else '-' }}</td>
@@ -266,7 +266,7 @@
     }
 
     table {
-      font-size: 9pt;
+      font-size: 8pt;
       width: 100%;
       border-collapse: collapse;
     }
@@ -280,7 +280,7 @@
     td {
       border: 1px solid #ccc;
       color: black;
-      padding: 4px;
+      padding: 2px;
     }
 
     th {

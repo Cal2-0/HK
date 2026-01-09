@@ -3,7 +3,7 @@
 {% block content %}
 <div class="dashboard-header">
   <div>
-    <h2>Outgoing Stock</h2>
+    <h2>Outbound Stock</h2>
     <p>Remove items from inventory</p>
   </div>
   <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
@@ -93,7 +93,7 @@
     <div class="total-bar">
       <span>Total Lines: <span id="total_lines" style="color: var(--danger);">0</span></span>
       <button class="btn btn-danger" onclick="finishBatch()" style="margin-left: 2rem;">
-        Confirm Outgoing
+        Confirm Outbound
       </button>
     </div>
   </div>
@@ -102,7 +102,7 @@
 <!-- History Section -->
 <div class="card" style="margin-top: 3rem;">
   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-    <h3>Recent Outgoing History</h3>
+    <h3>Recent Outbound History</h3>
     <div class="search-container" style="margin: 0; min-width: 250px;">
       <input type="text" id="historySearch" placeholder="Filter history..." oninput="filterHistory()">
     </div>
