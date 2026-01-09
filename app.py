@@ -2,6 +2,10 @@ import os
 import re
 import pandas as pd
 import traceback
+import threading
+import time
+import uuid
+import tempfile
 from datetime import datetime, date, timedelta
 from werkzeug.utils import secure_filename
 from flask import Flask, render_template, request, flash, redirect, url_for, jsonify, Response
@@ -56,6 +60,9 @@ db = SQLAlchemy(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
+
+# Global progress tracker
+import_progress = {}
 
 # CRITICAL FIX 2: Session Management
 @app.teardown_appcontext
