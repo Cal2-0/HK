@@ -580,188 +580,239 @@ def admin_db():
 @app.route('/admin/import_inventory', methods=['GET', 'POST'])
 @login_required
 def admin_import_inventory():
-    if not current_user.is_admin(): return redirect(url_for('dashboard'))
+    if not current_user.is_admin(): 
+        return redirect(url_for('dashboard'))
+    
     if request.method == 'POST':
-        if 'file' not in request.files: return redirect(request.url)
+        if 'file' not in request.files: 
+            return redirect(request.url)
         file = request.files['file']
-        if file.filename == '': return redirect(request.url)
+        if file.filename == '': 
+            return redirect(request.url)
         
         reset_inventory = request.form.get('reset_inventory') == 'on'
         
-        try:
-            try: df = pd.read_excel(file, engine='openpyxl')
-            except: df = pd.read_excel(file, engine='xlrd')
-            
-            # 1. DELETE PHASE (If Reset)
+        # Save file temporarily
+        # Use tempfile to generate a safe path
+        fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
+        os.close(fd) # Close the file descriptor, pandas will open by path
+        file.save(temp_path)
+        
+        # Generate unique job ID
+        job_id = str(uuid.uuid4())
+        import_progress[job_id] = {
+            'status': 'processing',
+            'processed': 0,
+            'total': 0,
+            'errors': 0,
+            'message': 'Starting import...'
+        }
+        
+        # Start background processing
+        u_id = current_user.id
+        thread = threading.Thread(
+            target=process_import_background,
+            args=(temp_path, reset_inventory, u_id, job_id)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        # Redirect to progress page
+        return redirect(url_for('import_progress_page', job_id=job_id))
+    
+    return render_template('import_inventory.html')
+
+def process_import_background(filepath, reset_inventory, user_id, job_id):
+    """Background worker for large imports"""
+    try:
+        print(f"[{job_id}] Starting background import from {filepath}")
+        # Read file in chunks
+        try: df = pd.read_excel(filepath, engine='openpyxl')
+        except: df = pd.read_excel(filepath, engine='xlrd')
+        
+        total_rows = len(df)
+        import_progress[job_id]['total'] = total_rows
+        import_progress[job_id]['message'] = f'Processing {total_rows} rows...'
+        
+        with app.app_context():
+            # 1. RESET PHASE
             if reset_inventory:
+                import_progress[job_id]['message'] = 'Clearing existing inventory...'
                 try:
                     db.session.query(Inventory).delete()
-                    db.session.flush()
+                    db.session.commit()
                 except Exception as e:
+                    print(f"Reset failed: {e}")
                     db.session.rollback()
-                    flash(f'Error resetting inventory: {e}')
-                    return redirect(request.url)
-
-            # 2. DICTIONARY PRE-LOAD
+            
+            # 2. PRE-LOAD MAPS
+            import_progress[job_id]['message'] = 'Loading reference data...'
             item_map = {item.sku: item.id for item in Item.query.all()}
             loc_map = {loc.name: loc.id for loc in Location.query.all()}
             
-            # 3. METADATA CREATION (Items/Locations)
-            new_items_data = [] # List of dicts
-            new_locs_data = []
+            # 3. PROCESS IN CHUNKS
+            CHUNK_SIZE = 100
+            new_items = []
+            new_locs = []
+            inv_updates = {}  # Key: (item_id, loc_id, expiry) -> quantity
             
-            seen_skus = set(item_map.keys())
-            seen_locs = set(loc_map.keys())
-            
-            # Using itertuples is 100x faster than iterrows
-            for row in df.itertuples(index=False):
+            for idx, row in enumerate(df.itertuples(index=False)):
                 try:
+                    # Generic Row Parsing
                     if len(row) < 2: continue
-                    loc_name = str(row[0]).strip()
-                    sku = str(row[1]).strip()
-                    desc = str(row[2]).strip() if len(row) > 2 else ''
-                    
-                    if not sku or sku.lower() == 'nan': continue
-                    
-                    if sku not in seen_skus:
-                        new_items_data.append({'sku': sku, 'name': desc or 'Unknown'})
-                        seen_skus.add(sku)
-                        
-                    if loc_name not in seen_locs:
-                        new_locs_data.append({'name': loc_name})
-                        seen_locs.add(loc_name)
-                except: pass
-
-            # Heavy Bulk Insert for Metadata
-            if new_items_data:
-                db.session.bulk_insert_mappings(Item, new_items_data)
-                db.session.flush() # Needed to generate IDs
-                # Refresh map
-                item_map = {item.sku: item.id for item in Item.query.all()}
-                
-            if new_locs_data:
-                db.session.bulk_insert_mappings(Location, new_locs_data)
-                db.session.flush()
-                loc_map = {loc.name: loc.id for loc in Location.query.all()}
-
-            db.session.commit() # Commit metadata first
-
-            # 4. INVENTORY & TRANSACTION PROCESSING
-            # We will build a list of mappings for Transactions
-            # For Inventory, we must be careful about duplicates in the FILE and updates.
-            
-            # Current State Map
-            inv_map = {}
-            if not reset_inventory:
-                 # Load existing DB state
-                 inv_map = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in Inventory.query.all()}
-            
-            txns_to_insert = []
-            
-            # If reset_inventory is True, we can theoretically just bulk insert all Inventory 
-            # BUT the file might contain multiple rows for same item/loc/expiry that need summing.
-            # So we better build the state in memory first.
-            
-            # In-memory staging of final inventory state
-            # Key: (item_id, loc_id, expiry) -> Inventory Object (or dict)
-            # Since we can't easily mix ORM objects and bulk inserts for updates, 
-            # we will use ORM objects for updates and bulk for inserts?
-            # Actually, standard ORM is slow.
-            # FASTEST STRATEGY: 
-            # 1. Calculate final quantity deltas in memory.
-            # 2. Bulk Insert new records.
-            # 3. Bulk Update existing records (using mappings).
-            
-            updates_data = [] # List of {'id': pk, 'quantity': new_val...}
-            inserts_data = [] # List of dicts for new rows
-            
-            # To track what we've newly created in this batch (to aggregate within file)
-            # If we are resetting, inv_map starts empty.
-            
-            count = 0
-            errors = 0
-            
-            for row in df.itertuples(index=False):
-                try:
-                    if len(row) < 3: continue
                     loc_name = str(row[0]).strip()
                     sku = str(row[1]).strip()
                     if not sku or sku.lower() == 'nan': continue
                     
                     qty = 0
-                    if len(row) > 4: 
+                    if len(row) > 4:
                         try: qty = float(row[4])
                         except: pass
                     if qty <= 0: continue
                     
+                    # Expiry logic
                     expiry = ''
                     if len(row) > 3:
-                         val = row[3]
-                         if pd.notna(val):
-                             try:
-                                 s_val = str(val).strip()
-                                 if isinstance(val, (datetime, date, pd.Timestamp)): expiry = val.strftime('%m/%y')
-                                 elif len(s_val) >= 8:
+                        val = row[3]
+                        if pd.notna(val):
+                            try:
+                                s_val = str(val).strip()
+                                if isinstance(val, (datetime, date, pd.Timestamp)): expiry = val.strftime('%m/%y')
+                                elif len(s_val) >= 8:
                                      try: expiry = pd.to_datetime(s_val).strftime('%m/%y')
                                      except: expiry = s_val[:10]
-                                 else: expiry = s_val[:10]
-                             except: expiry = str(val)[:10]
+                                else: expiry = s_val[:10]
+                            except: expiry = str(val)[:10]
 
-                    i_id = item_map.get(sku)
-                    l_id = loc_map.get(loc_name)
-                    if not i_id or not l_id: continue
+                    desc = str(row[2]).strip() if len(row) > 2 else ''
                     
-                    key = (i_id, l_id, expiry)
+                    # Track New Metadata
+                    if sku not in item_map:
+                        new_items.append({'sku': sku, 'name': desc or 'Unknown'})
+                        item_map[sku] = -1 # Placeholder
                     
-                    # Update In-Memory Map
-                    if key in inv_map:
-                        inv = inv_map[key]
-                        inv.quantity += qty # Update object
-                        # Ensure we mark this object as dirty if it's an ORM object
-                        # If it is a purely in-memory dict (from Reset), just update dict
-                    else:
-                        # Create new ORM object 
-                        inv = Inventory(item_id=i_id, location_id=l_id, quantity=qty, expiry=expiry, worker_name=current_user.username)
-                        inv_map[key] = inv
-                        db.session.add(inv) # Add to session so it gets an ID eventually? 
-                        # Wait, for max speed we shouldn't use `add` yet if we want bulk.
-                        # But mixing is complex.
-                        # Let's stick to: "If reset, just add all. If not reset, update."
-                        # RE-APPROACH: Just use ORM `add` but with NO flushing until the very end.
+                    if loc_name not in loc_map:
+                        new_locs.append({'name': loc_name})
+                        loc_map[loc_name] = -1
                     
-                    # Prepare Transaction Dict (Fast)
-                    txns_to_insert.append({
-                        'type': 'IN', 'item_id': i_id, 'location_id': l_id, 'quantity': qty,
-                        'user_id': current_user.id, 'expiry': expiry,
-                        'worker_name': current_user.username, 
-                        'remarks': "Bulk Import/Reset" if reset_inventory else "Bulk Import",
-                        'timestamp': datetime.utcnow(),
-                        'date': date.today()
-                    })
+                    # Queue Inventory Update
+                    # We store by (SKU, LocName, Expiry) because we don't have IDs yet for new stuff
+                    key = (sku, loc_name, expiry)
+                    if key in inv_updates: inv_updates[key] += qty
+                    else: inv_updates[key] = qty
                     
-                    count += 1
-                except: errors += 1
+                    # Batch Metadata Commit
+                    if (idx + 1) % CHUNK_SIZE == 0:
+                        if new_items:
+                            db.session.bulk_insert_mappings(Item, new_items)
+                            db.session.flush()
+                            new_skus = [x['sku'] for x in new_items]
+                            for itm in Item.query.filter(Item.sku.in_(new_skus)).all():
+                                item_map[itm.sku] = itm.id
+                            new_items = []
+                            
+                        if new_locs:
+                            db.session.bulk_insert_mappings(Location, new_locs)
+                            db.session.flush()
+                            new_lnames = [x['name'] for x in new_locs]
+                            for lc in Location.query.filter(Location.name.in_(new_lnames)).all():
+                                loc_map[lc.name] = lc.id
+                            new_locs = []
+                            
+                        db.session.commit()
+                        
+                        import_progress[job_id]['processed'] = idx + 1
+                        import_progress[job_id]['message'] = f'Processed {idx + 1}/{total_rows} rows...'
+                        
+                except Exception as e:
+                    import_progress[job_id]['errors'] += 1
+                    print(f"Row {idx} error: {e}")
 
-            # COMMIT PHASE
-            # 1. Commit Inventory Changes (SQLAlchemy will batch inserts if possible)
-            # The bottleneck was likely the frequent commits or individual flushes.
-            # checking 2000 items in memory is instant.
+            # Final Metadata Commit
+            if new_items:
+                db.session.bulk_insert_mappings(Item, new_items)
+                db.session.flush()
+                new_skus = [x['sku'] for x in new_items]
+                for itm in Item.query.filter(Item.sku.in_(new_skus)).all(): item_map[itm.sku] = itm.id
+                
+            if new_locs:
+                db.session.bulk_insert_mappings(Location, new_locs)
+                db.session.flush()
+                new_lnames = [x['name'] for x in new_locs]
+                for lc in Location.query.filter(Location.name.in_(new_lnames)).all(): loc_map[lc.name] = lc.id
+            db.session.commit()
             
-            db.session.commit() # Bulk persist Inventory
+            # 4. INVENTORY UPDATES (Bulk)
+            import_progress[job_id]['message'] = 'Finalizing inventory updates...'
             
-            # 2. Bulk Insert Transactions (Bypassing ORM overhead)
+            inventory_lookup = {}
+            if not reset_inventory:
+                 inventory_lookup = {(inv.item_id, inv.location_id, inv.expiry): inv for inv in Inventory.query.all()}
+            
+            worker_name = "System"
+            try: worker_name = User.query.get(user_id).username
+            except: pass
+            
+            txn_date = date.today()
+            txn_ts = datetime.utcnow()
+            
+            txns_to_insert = []
+            
+            # Process aggregated updates
+            for key, qty in inv_updates.items():
+                sku, loc_name, expiry = key
+                i_id = item_map.get(sku)
+                l_id = loc_map.get(loc_name)
+                
+                if not i_id or not l_id: continue
+                
+                db_key = (i_id, l_id, expiry)
+                
+                if db_key in inventory_lookup:
+                     inv = inventory_lookup[db_key]
+                     inv.quantity += qty
+                else:
+                     inv = Inventory(item_id=i_id, location_id=l_id, quantity=qty, expiry=expiry, worker_name=worker_name)
+                     db.session.add(inv)
+                     inventory_lookup[db_key] = inv
+                
+                txns_to_insert.append({
+                    'type': 'IN', 'item_id': i_id, 'location_id': l_id, 'quantity': qty,
+                    'user_id': user_id, 'expiry': expiry, 'worker_name': worker_name,
+                    'remarks': "Bulk Import/Reset" if reset_inventory else "Bulk Import",
+                    'timestamp': txn_ts, 'date': txn_date
+                })
+            
+            db.session.commit() 
+            
             if txns_to_insert:
                 db.session.bulk_insert_mappings(Transaction, txns_to_insert)
                 db.session.commit()
             
-            flash(f'Processing Complete! {count} items. Errors: {errors}.')
+            import_progress[job_id]['status'] = 'completed'
+            import_progress[job_id]['processed'] = total_rows
+            import_progress[job_id]['message'] = f'Import complete! {total_rows} rows processed.'
             
-        except Exception as e:
-            db.session.rollback()
-            flash(f'Critical Import Error: {e}')
-            print(traceback.format_exc())
-            
-    return render_template('import_inventory.html')
+    except Exception as e:
+        import_progress[job_id]['status'] = 'failed'
+        import_progress[job_id]['message'] = f'Error: {str(e)}'
+        print(traceback.format_exc())
+    finally:
+        try: os.unlink(filepath)
+        except: pass
+
+@app.route('/import_progress/<job_id>')
+@login_required
+def import_progress_page(job_id):
+    if not current_user.is_admin(): return redirect(url_for('dashboard'))
+    return render_template('import_progress.html', job_id=job_id)
+
+@app.route('/api/import_progress/<job_id>')
+@login_required
+def import_progress_api(job_id):
+    if job_id in import_progress:
+        return jsonify(import_progress[job_id])
+    return jsonify({'status': 'not_found'}), 404
 
 @app.route('/admin/items', methods=['GET', 'POST'])
 @login_required
