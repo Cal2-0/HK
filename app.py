@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import pandas as pd
 import traceback
 import threading
@@ -61,8 +62,8 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-# Global progress tracker
-import_progress = {}
+# Legacy global removed (switched to file-based)
+# import_progress = {}
 
 # CRITICAL FIX 2: Session Management
 @app.teardown_appcontext
@@ -576,7 +577,32 @@ def admin_db():
         except Exception as e: flash(f'Error: {e}')
     return render_template('admin_db.html', tables=tables, current_table=current_table, data=data, columns=columns)
 
-# CRITICAL FIX 4: Robust Imports (Batching + Error Handling)
+# Helper: File-based Progress (Safe for Gunicorn w/ Multiple Workers)
+def get_progress_file(job_id):
+    try:
+        tmp = tempfile.gettempdir()
+        return os.path.join(tmp, f"import_job_{job_id}.json")
+    except: return None
+
+def save_progress(job_id, data):
+    try:
+        path = get_progress_file(job_id)
+        if path:
+            with open(path, 'w') as f:
+                json.dump(data, f)
+    except Exception as e:
+        print(f"Error saving progress: {e}")
+
+def load_progress(job_id):
+    try:
+        path = get_progress_file(job_id)
+        if path and os.path.exists(path):
+            with open(path, 'r') as f:
+                return json.load(f)
+        return None
+    except: return None
+
+# CRITICAL FIX 4: Robust Imports (Background + File Persisted Status)
 @app.route('/admin/import_inventory', methods=['GET', 'POST'])
 @login_required
 def admin_import_inventory():
@@ -584,6 +610,8 @@ def admin_import_inventory():
         return redirect(url_for('dashboard'))
     
     if request.method == 'POST':
+        print("DEBUG: Import POST received") # Health Check
+        
         if 'file' not in request.files: 
             return redirect(request.url)
         file = request.files['file']
@@ -592,33 +620,41 @@ def admin_import_inventory():
         
         reset_inventory = request.form.get('reset_inventory') == 'on'
         
-        # Save file temporarily
-        # Use tempfile to generate a safe path
-        fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
-        os.close(fd) # Close the file descriptor, pandas will open by path
-        file.save(temp_path)
-        
-        # Generate unique job ID
-        job_id = str(uuid.uuid4())
-        import_progress[job_id] = {
-            'status': 'processing',
-            'processed': 0,
-            'total': 0,
-            'errors': 0,
-            'message': 'Starting import...'
-        }
-        
-        # Start background processing
-        u_id = current_user.id
-        thread = threading.Thread(
-            target=process_import_background,
-            args=(temp_path, reset_inventory, u_id, job_id)
-        )
-        thread.daemon = True
-        thread.start()
-        
-        # Redirect to progress page
-        return redirect(url_for('import_progress_page', job_id=job_id))
+        try:
+            # Save file temporarily
+            fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
+            os.close(fd)
+            file.save(temp_path)
+            
+            # Generate unique job ID
+            job_id = str(uuid.uuid4())
+            
+            # Init Progress (File Based)
+            init_state = {
+                'status': 'processing',
+                'processed': 0,
+                'total': 0,
+                'errors': 0,
+                'message': 'Initializing background worker...'
+            }
+            save_progress(job_id, init_state)
+            
+            # Start background processing
+            u_id = current_user.id
+            thread = threading.Thread(
+                target=process_import_background,
+                args=(temp_path, reset_inventory, u_id, job_id)
+            )
+            thread.daemon = True
+            thread.start()
+            
+            print(f"DEBUG: Thread started for Job {job_id}")
+            return redirect(url_for('import_progress_page', job_id=job_id))
+            
+        except Exception as e:
+            print(f"CRITICAL STARTUP ERROR: {e}")
+            flash(f'Error starting import: {e}')
+            return redirect(request.url)
     
     return render_template('import_inventory.html')
 
@@ -626,18 +662,29 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
     """Background worker for large imports"""
     try:
         print(f"[{job_id}] Starting background import from {filepath}")
+        
+        # Helper to update status
+        def update_status(msg, processed=0, total=0, errors=0, status='processing'):
+            data = load_progress(job_id) or {}
+            data.update({
+                'message': msg,
+                'processed': processed,
+                'total': total or data.get('total', 0),
+                'errors': errors or data.get('errors', 0),
+                'status': status
+            })
+            save_progress(job_id, data)
         # Read file in chunks
         try: df = pd.read_excel(filepath, engine='openpyxl')
         except: df = pd.read_excel(filepath, engine='xlrd')
         
         total_rows = len(df)
-        import_progress[job_id]['total'] = total_rows
-        import_progress[job_id]['message'] = f'Processing {total_rows} rows...'
+        update_status(f'Processing {total_rows} rows...', total=total_rows)
         
         with app.app_context():
             # 1. RESET PHASE
             if reset_inventory:
-                import_progress[job_id]['message'] = 'Clearing existing inventory...'
+                update_status('Clearing existing inventory...')
                 try:
                     db.session.query(Inventory).delete()
                     db.session.commit()
@@ -646,7 +693,7 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
                     db.session.rollback()
             
             # 2. PRE-LOAD MAPS
-            import_progress[job_id]['message'] = 'Loading reference data...'
+            update_status('Loading reference data...')
             item_map = {item.sku: item.id for item in Item.query.all()}
             loc_map = {loc.name: loc.id for loc in Location.query.all()}
             
@@ -655,6 +702,7 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
             new_items = []
             new_locs = []
             inv_updates = {}  # Key: (item_id, loc_id, expiry) -> quantity
+            current_errors = 0
             
             for idx, row in enumerate(df.itertuples(index=False)):
                 try:
@@ -721,11 +769,10 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
                             
                         db.session.commit()
                         
-                        import_progress[job_id]['processed'] = idx + 1
-                        import_progress[job_id]['message'] = f'Processed {idx + 1}/{total_rows} rows...'
+                        update_status(f'Processed {idx + 1}/{total_rows} rows...', processed=idx+1, errors=current_errors)
                         
                 except Exception as e:
-                    import_progress[job_id]['errors'] += 1
+                    current_errors += 1
                     print(f"Row {idx} error: {e}")
 
             # Final Metadata Commit
@@ -743,7 +790,7 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
             db.session.commit()
             
             # 4. INVENTORY UPDATES (Bulk)
-            import_progress[job_id]['message'] = 'Finalizing inventory updates...'
+            update_status('Finalizing inventory updates...', processed=total_rows, errors=current_errors)
             
             inventory_lookup = {}
             if not reset_inventory:
@@ -789,13 +836,12 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
                 db.session.bulk_insert_mappings(Transaction, txns_to_insert)
                 db.session.commit()
             
-            import_progress[job_id]['status'] = 'completed'
-            import_progress[job_id]['processed'] = total_rows
-            import_progress[job_id]['message'] = f'Import complete! {total_rows} rows processed.'
+            update_status(f'Import complete! {total_rows} rows processed.', processed=total_rows, errors=current_errors, status='completed')
             
     except Exception as e:
-        import_progress[job_id]['status'] = 'failed'
-        import_progress[job_id]['message'] = f'Error: {str(e)}'
+        data = load_progress(job_id) or {}
+        data.update({'status': 'failed', 'message': f'Error: {str(e)}'})
+        save_progress(job_id, data)
         print(traceback.format_exc())
     finally:
         try: os.unlink(filepath)
@@ -810,8 +856,8 @@ def import_progress_page(job_id):
 @app.route('/api/import_progress/<job_id>')
 @login_required
 def import_progress_api(job_id):
-    if job_id in import_progress:
-        return jsonify(import_progress[job_id])
+    data = load_progress(job_id)
+    if data: return jsonify(data)
     return jsonify({'status': 'not_found'}), 404
 
 @app.route('/admin/items', methods=['GET', 'POST'])
