@@ -1185,5 +1185,27 @@ def get_location_inventory(location_id):
         })
     except: return jsonify({'error': 'Error'}), 500
 
+@app.route('/api/item/<item_id>/locations')
+@login_required
+def get_item_locations(item_id):
+    try:
+        # Find inventory for this item with positive quantity
+        inventory = Inventory.query.filter_by(item_id=item_id).filter(Inventory.quantity > 0).join(Location).all()
+        
+        # Group by location (incase multiple batches in same location)
+        loc_map = {}
+        for inv in inventory:
+            if inv.location_id not in loc_map:
+                loc_map[inv.location_id] = {
+                    'id': inv.location_id,
+                    'name': inv.location.name,
+                    'quantity': 0
+                }
+            loc_map[inv.location_id]['quantity'] += inv.quantity
+            
+        return jsonify({'locations': list(loc_map.values())})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get('PORT', 5001)), use_reloader=True)
