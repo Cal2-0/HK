@@ -13,7 +13,8 @@
 
 <div class="workflow-container">
 
-  <!-- Batch Header -->
+  {% if current_user.is_admin() %}
+  <!-- Batch Header (Admin Only) -->
   <div class="card" style="margin-bottom: 2rem; background: var(--bg-dark);">
     <h3 style="margin-bottom: 1.5rem; color: var(--primary);">Batch Information</h3>
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
@@ -67,7 +68,7 @@
     </div>
   </div>
 
-  <!-- Review Section -->
+  <!-- Review Section (Admin Only) -->
   <div class="review-section">
     <h3>Current Batch Items</h3>
     <table class="review-table">
@@ -96,6 +97,16 @@
       </button>
     </div>
   </div>
+
+  {% else %}
+  <!-- Read Only View for Non-Admins -->
+  <div class="card"
+    style="padding: 2rem; text-align: center; border: 1px solid var(--border-color); background: var(--bg-card);">
+    <h3 style="color: var(--text-muted);">Read-Only Access</h3>
+    <p style="color: var(--text-muted);">You do not have permission to add stock. Please contact an administrator.</p>
+  </div>
+  {% endif %}
+
 </div>
 
 <!-- History Section -->
@@ -152,33 +163,42 @@
 </div>
 
 <script>
-  // ... (Keep existing JS logic, just ensuring IDs match) ...
   let cart = [];
   let selectedItem = null;
   let currentFocus = -1;
 
-  window.onload = () => document.getElementById('item_search').focus();
+  {% if current_user.is_admin() %}
+  window.onload = () => {
+    const search = document.getElementById('item_search');
+    if (search) search.focus();
+  };
 
-  // Navigation Logic
-  // Removed 'item_search' from generic loop to handle it specifically
-  const inputs = ['location_id', 'quantity', 'pallets', 'expiry', 'add_btn'];
-  inputs.forEach((id, index) => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          if (id === 'add_btn' || id === 'expiry') {
-            // On last field or button, add the item
-            addItem();
-          } else {
-            const next = document.getElementById(inputs[index + 1]);
-            if (next) next.focus();
-          }
-        }
-      });
-    }
-  });
+  // Navigation Logic - Explicit Listeners
+  const el = (id) => document.getElementById(id);
+
+  if (el('location_id')) {
+    el('location_id').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); el('quantity').focus(); }
+    });
+  }
+
+  if (el('quantity')) {
+    el('quantity').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); el('pallets').focus(); }
+    });
+  }
+
+  if (el('pallets')) {
+    el('pallets').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); el('expiry').focus(); }
+    });
+  }
+
+  if (el('expiry')) {
+    el('expiry').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addItem(); }
+    });
+  }
 
   // Search Logic
   const searchInput = document.getElementById('item_search');
@@ -273,9 +293,9 @@
     const pallets = parseInt(document.getElementById('pallets').value) || 0;
     const expiry = document.getElementById('expiry').value.trim();
 
-    if (!selectedItem) { showToast("Please select a valid item.", 'error'); return; }
-    if (!loc) { showToast("Please enter a location.", 'error'); return; }
-    if (!qty || qty <= 0) { showToast("Invalid quantity.", 'error'); return; }
+    if (!selectedItem) { alert("Please select a valid item."); return; }
+    if (!loc) { alert("Please enter a location."); return; }
+    if (!qty || qty <= 0) { alert("Invalid quantity."); return; }
 
     const itemText = selectedItem.text;
     const itemSku = itemText.match(/\((.*?)\)/)?.[1] || '';
@@ -303,11 +323,6 @@
     document.getElementById('quantity').value = '';
     document.getElementById('pallets').value = '';
     document.getElementById('expiry').value = '';
-
-    // Show feedback
-    if (typeof showToast === 'function') {
-      showToast(`Added ${itemName} to batch!`);
-    }
 
     // Re-focus search for next item
     setTimeout(() => document.getElementById('item_search').focus(), 50);
@@ -365,7 +380,7 @@
       .then(res => res.json())
       .then(data => {
         if (data.success) {
-          alert(data.message);
+          alert('Success! Stock Added.');
           window.location.href = '/dashboard';
         } else {
           alert('Error: ' + data.message);
@@ -376,6 +391,7 @@
         alert('Error submitting stock');
       });
   }
+  {% endif %}
 
   function filterHistory() {
     const input = document.getElementById('historySearch');

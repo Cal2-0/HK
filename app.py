@@ -350,6 +350,9 @@ def logout():
 @login_required
 def incoming():
     if request.method == 'POST':
+        if not current_user.is_admin():
+            return jsonify({'success': False, 'message': 'Permission Denied: Admin role required'}), 403
+
         data = request.get_json()
         items = data.get('items', [])
         batch_doc = data.get('doc_number')
@@ -406,6 +409,9 @@ def incoming():
 @login_required
 def outgoing():
     if request.method == 'POST':
+        if not current_user.is_admin():
+            return jsonify({'success': False, 'message': 'Permission Denied: Admin role required'}), 403
+            
         data = request.get_json()
         try:
             batch_date = date.today()
@@ -690,8 +696,10 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
             if reset_inventory:
                 update_status('Clearing existing inventory...')
                 try:
-                    db.session.query(Inventory).delete()
+                    # Robust Clear: Using delete() on the query
+                    num_deleted = db.session.query(Inventory).delete()
                     db.session.commit()
+                    print(f"DEBUG: Reset Inventory - Deleted {num_deleted} rows.")
                 except Exception as e:
                     print(f"Reset failed: {e}")
                     db.session.rollback()

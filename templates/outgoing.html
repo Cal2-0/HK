@@ -13,7 +13,8 @@
 
 <div class="workflow-container">
 
-  <!-- Batch Header -->
+  {% if current_user.is_admin() %}
+  <!-- Batch Header (Admin Only) -->
   <div class="card" style="margin-bottom: 2rem; background: var(--bg-dark);">
     <h3 style="margin-bottom: 1.5rem; color: var(--danger);">Batch Information</h3>
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
@@ -70,7 +71,7 @@
     </div>
   </div>
 
-  <!-- Review Section -->
+  <!-- Review Section (Admin Only) -->
   <div class="review-section">
     <h3>Current Batch Items</h3>
     <table class="review-table">
@@ -97,6 +98,17 @@
       </button>
     </div>
   </div>
+
+  {% else %}
+  <!-- Read Only View for Non-Admins -->
+  <div class="card"
+    style="padding: 2rem; text-align: center; border: 1px solid var(--border-color); background: var(--bg-card);">
+    <h3 style="color: var(--text-muted);">Read-Only Access</h3>
+    <p style="color: var(--text-muted);">You do not have permission to remove stock. Please contact an administrator.
+    </p>
+  </div>
+  {% endif %}
+
 </div>
 
 <!-- History Section -->
@@ -150,11 +162,13 @@
   let selectedItem = null;
   let currentFocus = -1;
 
-  window.onload = () => document.getElementById('item_search').focus();
+  {% if current_user.is_admin() %}
+
+  const el = (id) => document.getElementById(id);
+  window.onload = () => { if (el('item_search')) el('item_search').focus(); };
 
   // Navigation Logic
-
-  document.getElementById('item_search').addEventListener('keydown', (e) => {
+  el('item_search').addEventListener('keydown', (e) => {
     const results = document.getElementById('item_results').getElementsByClassName('result-item');
     if (e.key === 'ArrowDown') {
       currentFocus++;
@@ -168,7 +182,7 @@
         if (results[currentFocus]) results[currentFocus].click();
       } else {
         // If already selected or no results, move to location
-        document.getElementById('location_id').focus();
+        el('location_id').focus();
       }
     } else if (e.key === 'Escape') {
       document.getElementById('item_results').style.display = 'none';
@@ -176,28 +190,33 @@
     }
   });
 
-  document.getElementById('location_id').addEventListener('keydown', (e) => {
+  el('location_id').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       const first = document.querySelector('#location_results .result-item');
-      if (first && !document.getElementById('location_id').value) {
+      // If we have results and user hasn't typed a full valid override, click the first one
+      // But if user is just tabbing through, maybe just focus next.
+      // Let's assume hitting enter on a location field means "I want to confirm this location"
+
+      if (first && !el('location_id').value) {
         first.click();
+      } else {
+        // Explicit move
+        el('quantity').focus();
       }
-      // Strictly go next
-      document.getElementById('quantity').focus();
     }
   });
 
   // Fetch locations on focus if item selected
-  document.getElementById('location_id').addEventListener('focus', () => {
+  el('location_id').addEventListener('focus', () => {
     if (selectedItem) fetchLocations(selectedItem.id);
   });
 
   // Regular enters
-  document.getElementById('quantity').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('pallets').focus(); }
+  el('quantity').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); el('pallets').focus(); }
   });
-  document.getElementById('pallets').addEventListener('keydown', (e) => {
+  el('pallets').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); addItem(); }
   });
 
@@ -386,7 +405,7 @@
       .then(res => res.json())
       .then(data => {
         if (data.success) {
-          alert(data.message);
+          alert('Success! Stock Removed.');
           window.location.href = '/dashboard';
         } else {
           alert('Error: ' + data.message);
@@ -397,6 +416,8 @@
         alert('Error submitting stock');
       });
   }
+
+  {% endif %}
 
   function filterHistory() {
     const input = document.getElementById('historySearch');
