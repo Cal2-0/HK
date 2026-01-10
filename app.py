@@ -623,13 +623,16 @@ def admin_import_inventory():
         print("DEBUG: Import POST received") # Health Check
         
         if 'file' not in request.files: 
+            flash('Error: No file part in request')
             return redirect(request.url)
         file = request.files['file']
         if file.filename == '': 
+            flash('Error: No file selected')
             return redirect(request.url)
         
-        reset_inventory = request.form.get('reset_inventory') == 'on'
-        
+        reset_inventory = request.form.get('reset_inventory') is not None
+        print(f"DEBUG: Reset Checkbox: {request.form.get('reset_inventory')} -> Parsed: {reset_inventory}")
+
         try:
             # Save file temporarily
             fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
@@ -651,16 +654,19 @@ def admin_import_inventory():
             
             # Start background processing
             u_id = current_user.id
-            thread = threading.Thread(
-                target=process_import_background,
-                args=(temp_path, reset_inventory, u_id, job_id)
-            )
-            thread.daemon = True
-            thread.start()
-            
-            print(f"DEBUG: Thread started for Job {job_id}")
-            return redirect(url_for('import_progress_page', job_id=job_id))
-            
+            try:
+                thread = threading.Thread(
+                    target=process_import_background,
+                    args=(temp_path, reset_inventory, u_id, job_id)
+                )
+                thread.daemon = True
+                thread.start()
+                print(f"DEBUG: Thread started for Job {job_id}")
+                return redirect(url_for('import_progress_page', job_id=job_id))
+            except Exception as te:
+                flash(f'Error starting background thread: {te}')
+                return redirect(request.url)
+                
         except Exception as e:
             print(f"CRITICAL STARTUP ERROR: {e}")
             flash(f'Error starting import: {e}')
@@ -671,7 +677,7 @@ def admin_import_inventory():
 def process_import_background(filepath, reset_inventory, user_id, job_id):
     """Background worker for large imports"""
     try:
-        print(f"[{job_id}] Starting background import from {filepath}")
+        print(f"[{job_id}] Starting background import from {filepath}. Reset Mode: {reset_inventory}")
         
         # Helper to update status
         def update_status(msg, processed=0, total=0, errors=0, status='processing'):
@@ -696,10 +702,17 @@ def process_import_background(filepath, reset_inventory, user_id, job_id):
             if reset_inventory:
                 update_status('Clearing existing inventory...')
                 try:
-                    # Robust Clear: Using delete() on the query
-                    num_deleted = db.session.query(Inventory).delete()
+                    # Robust Clear: Raw SQL to bypass any ORM/Cascade issues
+                    db.session.execute(text('DELETE FROM inventory'))
                     db.session.commit()
-                    print(f"DEBUG: Reset Inventory - Deleted {num_deleted} rows.")
+                    
+                    # Verify
+                    count = db.session.query(Inventory).count()
+                    print(f"DEBUG: Reset Inventory - Rows Remaining: {count}")
+                    if count > 0:
+                        print("WARNING: Delete failed? Creating new transaction...")
+                        db.session.execute(text('DELETE FROM inventory'))
+                        db.session.commit()
                 except Exception as e:
                     print(f"Reset failed: {e}")
                     db.session.rollback()

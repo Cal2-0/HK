@@ -14,7 +14,8 @@
       </p>
     </div>
 
-    <form method="POST" enctype="multipart/form-data" style="display: flex; flex-direction: column; gap: 1rem;">
+    <form action="{{ url_for('admin_import_inventory') }}" method="POST" enctype="multipart/form-data"
+      style="display: flex; flex-direction: column; gap: 1rem;">
       <div>
         <label style="display: block; margin-bottom: 0.5rem;">Select Excel File</label>
         <input type="file" name="file" accept=".xlsx, .xls" required
