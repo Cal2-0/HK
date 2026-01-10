@@ -470,7 +470,7 @@ def reports():
     brand = request.args.get('brand', '').strip()
 
     # Report Type: 'transactions' (default) or 'inventory' (Snapshot)
-    report_type = request.args.get('report_type', 'transactions')
+    report_type = request.args.get('report_type', 'inventory')
     
     # --- INVENTORY SNAPSHOT LOGIC ---
     if report_type == 'inventory':

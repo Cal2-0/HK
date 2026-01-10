@@ -236,7 +236,7 @@
           <td>{{ trans.location.name }}</td>
           <td
             style="font-weight: 700; {% if trans.type=='IN' %}color: var(--success);{% else %}color: var(--danger);{% endif %}">
-            {{ trans.quantity }}
+            {{ trans.quantity | int }}
           </td>
           <td>{{ trans.pallets or '-' }}</td>
           <td>{{ trans.worker_name or (trans.user.username if trans.user else 'Sys') }}</td>
@@ -275,7 +275,7 @@
           <td style="font-family: monospace;">{{ inv.item.sku }}</td>
           <td style="font-weight: 600;">{{ inv.item.name }}</td>
           <td>{{ inv.item.brand or '-' }}</td>
-          <td style="color: var(--success); font-weight: 700; font-size: 1.1rem;">{{ inv.quantity }}</td>
+          <td style="color: var(--success); font-weight: 700; font-size: 1.1rem;">{{ inv.quantity | int }}</td>
           <td>{{ inv.pallets or '-' }}</td>
           <td>
             {% if inv.expiry %}
