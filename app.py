@@ -494,17 +494,30 @@ def reports():
         if request.args.get('export') == 'csv':
             try:
                 data = []
-                for i in query.all():
-                    # Defensive check for logic
-                    loc_name = i.location.name if i.location else "Unknown"
-                    item_sku = i.item.sku if i.item else "Unknown"
-                    item_name = i.item.name if i.item else "Unknown"
-                    item_brand = i.item.brand if i.item and i.item.brand else "-"
+                results = query.options(
+                    joinedload(Inventory.item), 
+                    joinedload(Inventory.location)
+                ).all()
+                
+                for i in results:
+                    # Defensive null checks
+                    if not i.item or not i.location:
+                        continue
+                        
+                    loc_name = i.location.name
+                    item_sku = i.item.sku
+                    item_name = i.item.name
+                    item_brand = i.item.brand if i.item.brand else "-"
                     
                     # Safe Status Check
                     status = 'Ok'
-                    try: status = check_expiry(str(i.expiry)).title() or 'Ok'
-                    except: pass
+                    if i.expiry:
+                        try:
+                            expiry_status = check_expiry(i.expiry)
+                            if expiry_status:
+                                status = expiry_status.title()
+                        except:
+                            pass
 
                     data.append({
                         'Location': loc_name,
@@ -512,8 +525,8 @@ def reports():
                         'Item Name': item_name,
                         'Brand': item_brand,
                         'Qty': i.quantity,
-                        'Pallets': i.pallets or 0,
-                        'Expiry': i.expiry or '-',
+                        'Pallets': i.pallets if i.pallets else 0,
+                        'Expiry': i.expiry if i.expiry else '-',
                         'Status': status
                     })
                 
@@ -528,6 +541,7 @@ def reports():
                 )
             except Exception as e:
                 print(f"CSV Export Error: {e}")
+                import traceback
                 traceback.print_exc()
                 return f"Error exporting CSV: {e}", 500
             
