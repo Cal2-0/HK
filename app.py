@@ -492,24 +492,44 @@ def reports():
 
         # Export CSV
         if request.args.get('export') == 'csv':
-            data = []
-            for i in query.all():
-                data.append({
-                    'Location': i.location.name,
-                    'Item Code': i.item.sku,
-                    'Item Name': i.item.name,
-                    'Brand': i.item.brand or '-',
-                    'Qty': i.quantity,
-                    'Pallets': i.pallets or 0,
-                    'Expiry': i.expiry or '-',
-                    'Status': check_expiry(i.expiry).title() or 'Ok'
-                })
-            df = pd.DataFrame(data)
-            return Response(
-                df.to_csv(index=False),
-                mimetype="text/csv",
-                headers={"Content-Disposition": f"attachment;filename=stock_snapshot_{date.today()}.csv"}
-            )
+            try:
+                data = []
+                for i in query.all():
+                    # Defensive check for logic
+                    loc_name = i.location.name if i.location else "Unknown"
+                    item_sku = i.item.sku if i.item else "Unknown"
+                    item_name = i.item.name if i.item else "Unknown"
+                    item_brand = i.item.brand if i.item and i.item.brand else "-"
+                    
+                    # Safe Status Check
+                    status = 'Ok'
+                    try: status = check_expiry(str(i.expiry)).title() or 'Ok'
+                    except: pass
+
+                    data.append({
+                        'Location': loc_name,
+                        'Item Code': item_sku,
+                        'Item Name': item_name,
+                        'Brand': item_brand,
+                        'Qty': i.quantity,
+                        'Pallets': i.pallets or 0,
+                        'Expiry': i.expiry or '-',
+                        'Status': status
+                    })
+                
+                if not data:
+                    return Response("No inventory data to export", mimetype="text/plain")
+
+                df = pd.DataFrame(data)
+                return Response(
+                    df.to_csv(index=False),
+                    mimetype="text/csv",
+                    headers={"Content-Disposition": f"attachment;filename=stock_snapshot_{date.today()}.csv"}
+                )
+            except Exception as e:
+                print(f"CSV Export Error: {e}")
+                traceback.print_exc()
+                return f"Error exporting CSV: {e}", 500
             
         inventory_items = query.options(joinedload(Inventory.item), joinedload(Inventory.location)).order_by(Location.name, Item.name).all()
         return render_template('reports.html', inventory=inventory_items, report_type='inventory', today=date.today())
