@@ -465,10 +465,61 @@ def logs():
 @app.route('/reports')
 @login_required
 def reports():
+    # Common Filters
+    search = request.args.get('search', '').strip()
+    brand = request.args.get('brand', '').strip()
+
+    # Report Type: 'transactions' (default) or 'inventory' (Snapshot)
+    report_type = request.args.get('report_type', 'transactions')
+    
+    # --- INVENTORY SNAPSHOT LOGIC ---
+    if report_type == 'inventory':
+        query = Inventory.query.join(Item).join(Location).filter(Inventory.quantity > 0)
+        
+        # Filters
+        if search:
+            query = query.filter(or_(
+                Item.name.ilike(f'%{search}%'), 
+                Item.sku.ilike(f'%{search}%'), 
+                Location.name.ilike(f'%{search}%')
+            ))
+        if brand:
+            query = query.filter(Item.brand.ilike(f'%{brand}%'))
+        try:
+             if request.args.get('min_qty'): query = query.filter(Inventory.quantity >= float(request.args.get('min_qty')))
+             if request.args.get('max_qty'): query = query.filter(Inventory.quantity <= float(request.args.get('max_qty')))
+        except: pass
+
+        # Export CSV
+        if request.args.get('export') == 'csv':
+            data = []
+            for i in query.all():
+                data.append({
+                    'Location': i.location.name,
+                    'Item Code': i.item.sku,
+                    'Item Name': i.item.name,
+                    'Brand': i.item.brand or '-',
+                    'Qty': i.quantity,
+                    'Pallets': i.pallets or 0,
+                    'Expiry': i.expiry or '-',
+                    'Status': check_expiry(i.expiry).title() or 'Ok'
+                })
+            df = pd.DataFrame(data)
+            return Response(
+                df.to_csv(index=False),
+                mimetype="text/csv",
+                headers={"Content-Disposition": f"attachment;filename=stock_snapshot_{date.today()}.csv"}
+            )
+            
+        inventory_items = query.options(joinedload(Inventory.item), joinedload(Inventory.location)).order_by(Location.name, Item.name).all()
+        return render_template('reports.html', inventory=inventory_items, report_type='inventory', today=date.today())
+
+
+    # --- TRANSACTION HISTORY LOGIC (Existing) ---
     query = Transaction.query.outerjoin(Item).outerjoin(Location)
     
     # 1. Search (Item Name, SKU, Loc Name, Doc Number)
-    search = request.args.get('search', '').strip()
+    # search = request.args.get('search', '').strip() # Already got above
     if search:
         query = query.filter(or_(
             Item.name.ilike(f'%{search}%'), 
@@ -478,7 +529,7 @@ def reports():
         ))
     
     # 2. Brand Filter
-    brand = request.args.get('brand', '').strip()
+    # brand = request.args.get('brand', '').strip() # Already got above
     if brand:
         query = query.filter(Item.brand.ilike(f'%{brand}%'))
         
@@ -569,7 +620,7 @@ def reports():
         joinedload(Transaction.user)
     ).order_by(Transaction.timestamp.desc()).limit(200).all()
     
-    return render_template('reports.html', transactions=transactions, today=date.today(), timedelta=timedelta)
+    return render_template('reports.html', transactions=transactions, report_type='transactions', today=date.today(), timedelta=timedelta)
 
 @app.route('/admin/db')
 @login_required
